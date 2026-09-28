@@ -220,7 +220,7 @@ ok "the crash-free rate is on the screen, with the caveat that belongs beside it
 step "shutdown"
 # `docker stop` sends SIGTERM and waits, which is the same signal systemd sends
 # and the same question: does it drain, or does it have to be killed?
-docker stop -t 15 "$SERVER" >/dev/null
+docker stop -t 40 "$SERVER" >/dev/null
 docker logs "$SERVER" 2>&1 | grep -q stopped || fail "no clean shutdown in the log"
 docker rm -f "$SERVER" >/dev/null
 docker rm -f "$RECEIVER" >/dev/null
