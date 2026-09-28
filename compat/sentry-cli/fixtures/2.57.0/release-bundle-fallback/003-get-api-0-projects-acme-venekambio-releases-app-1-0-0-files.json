@@ -1,0 +1,20 @@
+{
+  "seq": 3,
+  "method": "GET",
+  "path": "/api/0/projects/acme/venekambio/releases/app@1.0.0/files/",
+  "query": {
+    "checksum": [
+      "0b3a59b094ec215e34782211c712ae37dbbf8764",
+      "f3c4ec7ae48c553eb352c9b2487c63a2ddcf72e5"
+    ],
+    "cursor": [
+      ""
+    ]
+  },
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "response_status": 200
+}

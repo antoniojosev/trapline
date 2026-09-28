@@ -1,0 +1,13 @@
+{
+  "name": "compat-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sends events through the official Node SDK and checks what arrived.",
+  "main": "main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@sentry/node": "10.71.0"
+  }
+}

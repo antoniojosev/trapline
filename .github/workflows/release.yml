@@ -1,0 +1,60 @@
+name: Release
+
+# A tag is a release. Pushing `vX.Y.Z` builds the archives for every target,
+# the checksums, the container image for amd64 and arm64, and the GitHub
+# release that scripts/install.sh resolves `latest` against — all from
+# .goreleaser.yaml, which is also what scripts/install-test.sh exercises every
+# night with `--snapshot`. Nothing here is release logic; this file only
+# provides the two things a real release has that a snapshot does not: a
+# registry to push to and a token to publish with.
+#
+# GITHUB_TOKEN is enough for both. `contents: write` creates the release and
+# uploads the archives; `packages: write` pushes to ghcr.io under this
+# repository's owner. No personal token, no long-lived secret to rotate.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  GO_VERSION: "1.26.6"
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser reads the tags to name the version and the commits
+          # since the previous tag to write the changelog; a shallow clone
+          # has neither.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # buildx is what lets one runner produce the arm64 image. The image
+      # copies a static binary into scratch and runs nothing at all for the
+      # target platform (Dockerfile.goreleaser), so QEMU is registered for
+      # completeness rather than because a RUN step needs it.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

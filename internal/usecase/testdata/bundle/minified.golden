@@ -1,0 +1,58 @@
+# TypeError: e is undefined
+
+- **issue**: 7
+- **project**: 1
+- **status**: resolved
+- **level**: error
+- **culprit**: `n in index-9f2b.js`
+- **first seen**: 2026-09-12T03:30:00Z
+- **last seen**: 2026-09-20T09:30:00Z
+- **events**: 55
+- **fingerprint**: `77aa0011` (grouping v1)
+
+## Frequency
+
+- last 24 h: 12
+- last 14 d: 55
+
+Today is well above this issue's own average for the fortnight: it is getting worse, not merely continuing.
+
+## Releases
+
+- **first seen in**: `shop@1.4.0`
+- **last seen in**: `shop@1.4.2`
+- **resolved**: 2026-09-20T08:30:00Z, against `shop@1.4.2`
+- **waiting for the next release**: events from `shop@1.4.2` and anything older are expected, not proof the fix failed
+- **suppressed**: 12 events counted from the resolved release without reopening it
+- **regressions**: 2, most recently in `shop@1.4.1`
+
+## Exception
+
+```
+TypeError: e is undefined
+```
+
+## Stacktrace
+
+Failing call first.
+
+   #1 `https://shop.example/assets/index-9f2b.js`:1:4712 in `n`
+
+## Tags
+
+- **environment**: `production` (55)
+
+## Recent occurrences
+
+- 2026-09-20T09:30:00Z  `1a2b3c4d5e6f708192a3b4c5d6e7f809`  release `shop@1.4.2`  env `production`  ← the occurrence above
+
+## Suspect commits
+
+Considering the 3 commits of `shop@1.4.0`, the release this issue was first seen in (ADR 019).
+
+- `aaaabbbb` — bump deps
+- `11112222` — checkout: rewrite the totals
+- _… and 1 more_
+
+None of the files this release changed appears in the stacktrace — which is expected, because these frames are still minified. Upload this build's source maps (`trapline artifacts upload`) and the next event will resolve.
+

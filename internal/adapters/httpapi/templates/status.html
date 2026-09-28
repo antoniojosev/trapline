@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{ .Title }}</title>
+<style>
+/*
+ * Inline, and there is no second file to fetch. This page is read on a phone,
+ * on a connection somebody is already unhappy about, while the thing it
+ * reports on is broken. A stylesheet that fails to load would leave the one
+ * page in this product that must work looking like it is broken too.
+ */
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfd; --fg: #14161a; --muted: #5d6470; --line: #e2e5ea;
+  --card: #ffffff; --up: #1f9d55; --down: #d1364a; --partial: #d98315;
+  --none: #d7dbe1;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --fg: #e8eaee; --muted: #99a1ad; --line: #242832;
+    --card: #171a21; --up: #35b26a; --down: #e05467; --partial: #e0973a;
+    --none: #2c313b;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--fg);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 760px; margin: 0 auto; }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+.lede { color: var(--muted); margin: 0 0 1.75rem; }
+.overall {
+  display: flex; align-items: center; gap: .6rem; padding: .9rem 1.1rem;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  font-weight: 600; margin-bottom: 1.5rem;
+}
+.dot { width: .65rem; height: .65rem; border-radius: 50%; flex: none; }
+.dot.up { background: var(--up); } .dot.down { background: var(--down); }
+.dot.unknown { background: var(--none); }
+.monitor {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  padding: 1.1rem; margin-bottom: 1rem;
+}
+.monitor header { display: flex; align-items: center; gap: .55rem; margin-bottom: .2rem; }
+.monitor h2 { font-size: 1.02rem; margin: 0; font-weight: 600; }
+.state { margin-left: auto; color: var(--muted); font-size: .85rem; }
+.windows { display: flex; gap: 1.5rem; margin: .75rem 0 .9rem; flex-wrap: wrap; }
+.windows div { font-size: .85rem; color: var(--muted); }
+.windows b { display: block; font-size: 1.05rem; color: var(--fg); font-weight: 600; }
+/*
+ * Ninety flex items rather than a chart. It scrolls sideways inside its own
+ * box on a narrow screen instead of stretching the page, and it needs no
+ * script to draw.
+ */
+.bars { display: flex; gap: 2px; overflow-x: auto; padding-bottom: .3rem; }
+.bars span {
+  flex: 1 0 3px; min-width: 3px; height: 30px; border-radius: 2px;
+  background: var(--none);
+}
+.bars span.up { background: var(--up); }
+.bars span.down { background: var(--down); }
+.bars span.partial { background: var(--partial); }
+.scale { display: flex; justify-content: space-between; color: var(--muted); font-size: .75rem; margin-top: .35rem; }
+.incidents { margin: .9rem 0 0; padding: .8rem 0 0; border-top: 1px solid var(--line); }
+.incidents h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 .45rem; }
+.incidents ul { margin: 0; padding-left: 1.1rem; }
+.incidents li { margin-bottom: .2rem; }
+.ongoing { color: var(--down); font-weight: 600; }
+footer { color: var(--muted); font-size: .8rem; margin-top: 2rem; }
+.empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>{{ .Title }}</h1>
+  {{ with .Description }}<p class="lede">{{ . }}</p>{{ end }}
+
+  <p class="overall">
+    {{ if .AllOperational }}
+      <span class="dot up"></span> All systems operational
+    {{ else if .Monitors }}
+      <span class="dot down"></span> {{ .Degraded }} of {{ len .Monitors }} not operational
+    {{ else }}
+      <span class="dot unknown"></span> Nothing is being reported on yet
+    {{ end }}
+  </p>
+
+  {{ range .Monitors }}
+  <section class="monitor">
+    <header>
+      <span class="dot {{ if eq .Status "up" }}up{{ else if eq .Status "down" }}down{{ else }}unknown{{ end }}"></span>
+      <h2>{{ .Name }}</h2>
+      <span class="state">
+        {{ statusLabel .Status }}{{ with since .Since }} since {{ . }}{{ end }}
+      </span>
+    </header>
+
+    <div class="windows">
+      {{ range .Windows }}
+      <div>
+        <b>{{ if .HasData }}{{ uptime .Uptime }}{{ else }}—{{ end }}</b>
+        {{ .Label }}
+      </div>
+      {{ end }}
+    </div>
+
+    <div class="bars">
+      {{ range .Bars }}<span class="{{ .State }}" title="{{ date .Day }}: {{ if .Checks }}{{ uptime .Uptime }} of {{ .Checks }} checks{{ else }}no data{{ end }}"></span>{{ end }}
+    </div>
+    <div class="scale"><span>90 days ago</span><span>today</span></div>
+
+    {{ if .Incidents }}
+    <div class="incidents">
+      <h3>Incidents</h3>
+      <ul>
+        {{ range .Incidents }}
+        <li{{ if .Ongoing }} class="ongoing"{{ end }}>
+          {{ date .Day }} — {{ .Failures }} of {{ .Checks }} checks failed,
+          about {{ duration .Downtime }}{{ if .Ongoing }} (ongoing){{ end }}
+        </li>
+        {{ end }}
+      </ul>
+    </div>
+    {{ end }}
+  </section>
+  {{ else }}
+  <p class="empty">No public monitors on this page yet.</p>
+  {{ end }}
+
+  <footer>
+    Updated {{ stamp .GeneratedAt }}. Uptime percentages come from daily
+    aggregates, so the shortest window is accurate to a day at its far edge;
+    the bars above are per day and exact. Checks run from one location.
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# build output
+/dist/
+/trapline
+/trapline.exe
+
+# local state (the whole point of the product: one SQLite file)
+*.db
+*.db-wal
+*.db-shm
+/data/
+
+# The key that encrypts alert channel credentials. It lives beside the database
+# and is deliberately NOT inside it (ADR 015), which also means `*.db` does not
+# cover it — and a real AES key committed by somebody who ran the server in the
+# repository root is exactly the accident this line exists to prevent.
+*.db.key
+*.key
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# UI smoke output: screenshots and traces from a failing browser run, useful
+# for exactly as long as the failure is being read.
+/artifacts/
+
+# The MCP gate's client, for the same reason as the recorder below: `go build
+# ./...` inside its module writes a binary named after the directory, and the
+# gate builds it into a temporary directory precisely so `git status` stays
+# clean when somebody builds it by hand instead.
+/compat/mcp/mcp
+
+# The recorder's own build output. `go build ./...` inside its module writes a
+# binary named after the directory, and a 9 MB artefact was committed that way
+# once already — after which nobody's `git status` could be clean again.
+/compat/sentry-cli/recorder/recorder
+
+# tooling
+/coverage.out
+/.golangci-cache/
+node_modules/
+
+# Frontend deps: the built output in internal/adapters/webui/dist IS committed
+# (embed.FS needs it and `go build` must not require Node), but its inputs are not.
+web/node_modules/
+web/e2e/node_modules/
+
+# TypeScript build cache: changes on every build, means nothing to a reader.
+web/tsconfig.tsbuildinfo
+
+# The load generator the hardening and footprint gates build in place. Like the
+# product's own binary, the source is what is tracked.
+compat/load/compat-load

@@ -1,0 +1,51 @@
+# Example Caddyfile for the `caddy` profile of docker-compose.yml.
+#
+# Caddy is here for one reason: it gets a certificate and renews it without
+# anyone remembering to. Everything else it could do is left alone, because a
+# proxy config that does more than it must is a second place where the product
+# behaves differently in production than in a test.
+
+# The fallback is not a placeholder to leave in place: it is there so that
+# forgetting TRAPLINE_DOMAIN produces a log line naming the variable, instead
+# of an empty site address, which Caddy reports as "unrecognized global option"
+# and nobody has ever debugged on the first try.
+{$TRAPLINE_DOMAIN:TRAPLINE_DOMAIN_IS_UNSET} {
+	# The panel and the ingest endpoint are the same server, so there is one
+	# route. Splitting them would only create a way to get one of them wrong.
+	reverse_proxy trapline:9000 {
+		# SDKs retry, but a request cut off mid-envelope is an event lost for
+		# as long as the retry backoff lasts, and the retry arrives during the
+		# incident someone is already reading. Give ingest room.
+		transport http {
+			read_timeout 60s
+			write_timeout 60s
+		}
+	}
+
+	# Events arrive gzip- or zstd-compressed and the server decompresses them
+	# with a hard size limit of its own. Re-encoding responses is still worth
+	# it for the panel, which is JSON and HTML.
+	encode zstd gzip
+
+	request_body {
+		# Larger than any single envelope should be, small enough that a body
+		# bomb dies at the proxy instead of at the parser. The server enforces
+		# its own limit too; this one just makes it cheaper.
+		max_size 30MB
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}
+
+# Serving on a hostname with no public DNS (a tailnet, a lab) means Caddy
+# cannot get a public certificate. Replace the site block above with:
+#
+#   http://{$TRAPLINE_DOMAIN:TRAPLINE_DOMAIN_IS_UNSET} {
+#       reverse_proxy trapline:9000
+#   }
+#
+# and set TRAPLINE_ORIGIN to the matching http:// URL, so the DSNs the panel
+# hands out use the scheme that actually works.

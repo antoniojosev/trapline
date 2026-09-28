@@ -1,0 +1,435 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.6"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The architecture gate (internal/arch) runs here, inside the ordinary
+      # test suite, so it cannot be skipped by not installing a linter.
+      - run: go test -race -coverprofile=coverage.out ./...
+      - name: Coverage of the domain
+        run: |
+          # The domain is where the rules live; ~90% is the standing target.
+          pct=$(go tool cover -func=coverage.out \
+            | grep 'internal/domain' \
+            | awk '{gsub(/%/,"",$3); total+=$3; n++} END {if (n) printf "%.1f", total/n; else print "0"}')
+          echo "domain coverage: ${pct}%"
+          awk -v p="$pct" 'BEGIN { exit (p+0 >= 85) ? 0 : 1 }' || {
+            echo "domain coverage below 85%"; exit 1; }
+
+  fuzz:
+    name: Fuzz the envelope parser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The ingest endpoint is public by design and authenticated only by a key
+      # that ships inside browser bundles, so every byte reaching this parser is
+      # attacker-chosen (ADR 002). A short run on every PR catches regressions;
+      # the seed corpus keeps what earlier runs found.
+      - run: go test -run=XXX -fuzz=FuzzParse -fuzztime=60s ./internal/envelope/
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "not gofmt'd:"; echo "$unformatted"; exit 1; fi
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+
+  vuln:
+    name: Vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # CGO_ENABLED=0 is the assertion, not just a setting: a CGO dependency
+      # would break cross-compilation and the static single binary (ADR 009).
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags="-s -w" -o trapline ./cmd/trapline
+      - name: Binary size budget
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          bytes=$(stat -c%s trapline)
+          mb=$((bytes / 1024 / 1024))
+          echo "binary: ${mb}MB"
+          if [ "$mb" -gt 30 ]; then echo "over the 30MB budget"; exit 1; fi
+
+  smoke:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Boots a real server, sets it up, drives it through the CLI, backs it
+      # up and measures memory. This is where the README's footprint claim is
+      # enforced — both figures, at rest and at peak.
+      - run: ./scripts/smoke.sh
+
+  ui-smoke:
+    name: Panel in a browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Docker is what pins the browser: a UI check that runs against whatever
+      # Chromium the runner happens to ship means something different every
+      # week, and the failures it produces are unreproducible locally. The
+      # server is the real binary serving the committed panel, on the host.
+      - run: ./scripts/ui-smoke.sh
+      # A failing run is a screenshot and a trace, which is the difference
+      # between "a selector timed out" and knowing what the page looked like.
+      - name: Screenshots and traces from a failing run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-artifacts
+          path: artifacts/ui
+          if-no-files-found: ignore
+          retention-days: 7
+
+  stats:
+    name: Dashboard and search
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Two hundred synthetic events with chosen timestamps, then every
+      # question the dashboard asks — and then a retention sweep with the
+      # event window set to nothing, because the aggregates only earn their
+      # place on the ingest path if they still answer after the payloads are
+      # gone (ADR 010). Runs on the PR: it takes seconds and needs nothing
+      # outside this repository.
+      - run: ./scripts/stats.sh
+
+  releases:
+    name: Release lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The one claim the feature makes, executable: after resolving an issue
+      # "in the next release", the instances still running the old build must
+      # not reopen it, and the first event from a genuinely newer build must.
+      # It runs on the pull request rather than at night because getting it
+      # wrong makes the status field untrustworthy, and a status nobody
+      # believes is worse than no status at all (ADR 012).
+      - run: PORT=9400 ./scripts/releases.sh
+
+  alerts:
+    name: Alerting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Five real destinations: mailpit in a container for SMTP, and a receiver
+      # of this repository's own that imitates Telegram, Slack and Discord on
+      # the routes those services actually use. It then does the three things
+      # that break alerting in production — the far end goes down, the same
+      # thing breaks ten times, and the server is killed outright mid-delivery
+      # — because an alerting subsystem is only worth having if it survives
+      # exactly those (ADR 015). On the pull request, not nightly: it runs in
+      # about ninety seconds, and a notification that silently stopped working
+      # is not something to discover a day later.
+      - run: PORT=9500 ./scripts/alerts.sh
+
+  digest:
+    name: Weekly digest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Two weeks of history through the public ingest endpoint, then every
+      # claim the weekly report makes: that "new this week" excludes an issue
+      # that has been failing for a month, that "came back" is this week's
+      # regression and not one from March, that the two weeks it compares do
+      # not overlap, and that the same period renders to the same bytes twice.
+      # It ends by deleting the events and asking for the report again — the
+      # ADR 010 promise, applied to the one feature that reports on a period
+      # long enough for retention to have reached it.
+      - run: PORT=9610 ./scripts/digest.sh
+
+  crons:
+    name: Cron monitors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The official Python SDK's @monitor decorator is one half of this gate,
+      # so the runtime has to be here: what is under test is the shape the SDK
+      # itself puts on the wire, which a hand-written envelope cannot check.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # On the pull request despite taking about two minutes, because most of
+      # that is one deliberate ninety-second wait: "the job did not run and
+      # nobody was told" is a claim about time passing, and it is the only
+      # claim in this feature an injected clock cannot make. Everything else
+      # about it is unit-tested on a clock the test moves by hand.
+      - run: PORT=9703 ./scripts/crons.sh
+      # The cron parser reads an expression that arrives from an SDK's
+      # monitor_config over the public ingest endpoint, so it is
+      # attacker-chosen (ADR 002). The invariant is the one the watcher's
+      # termination rests on: the next occurrence is always later than now.
+      - run: make fuzz-cron
+
+  uptime:
+    name: Uptime monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # An nginx container is the thing being watched, and `docker stop` is the
+      # outage: a handler that returns 500 would not exercise a connection that
+      # is refused, which is what a real outage looks like from the checker.
+      # It also runs the SSRF guard against the addresses it exists to refuse,
+      # including the cloud metadata endpoint, and starts a second server
+      # without -uptime-allow-private to prove the flag is load-bearing rather
+      # than decorative (ADR 016). On the pull request rather than nightly: the
+      # guard is a security boundary, and a security boundary that regressed is
+      # not something to find out about a day later. It waits about two minutes
+      # in real time, because the shortest interval the product allows is
+      # thirty seconds and an outage takes two consecutive failures.
+      - run: PORT=9713 ./scripts/uptime.sh
+
+  tracing:
+    name: Tracing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Five hundred transactions through the official Go SDK, with latencies
+      # this repository chose and whose exact percentiles the sender prints
+      # before serialising them. That is the only way to check the claim ADR
+      # 007 rests on: a percentile computed by merging sketches has to match
+      # the percentile of what was actually sent, and a gate that asked the
+      # server for both numbers would only prove the server agrees with
+      # itself. It then lowers the sampling rate and checks that the
+      # aggregates still cover 100% of what arrived, and folds the minutes
+      # into their hours and checks the percentiles did not move. On the pull
+      # request rather than nightly: it takes about twenty seconds, and a
+      # dashboard whose numbers quietly became wrong is the worst kind of
+      # regression this product can ship.
+      - run: PORT=9903 ./scripts/tracing.sh
+      # The two observability decoders that read bytes somebody else wrote: the
+      # transaction payload, which arrives on the public ingest endpoint
+      # (ADR 002), and the latency sketch, which is read back off disk and is
+      # on the read path of a dashboard somebody opened during an incident.
+      - run: make fuzz-transaction
+      - run: make fuzz-sketch
+      # The third decoder that reads bytes somebody else wrote: a source map,
+      # which is a build artefact uploaded through an authenticated endpoint
+      # and turned into memory whose size the document itself chooses (ADR 018).
+      - run: make fuzz-sourcemap
+
+  health:
+    name: Release health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # A hundred sessions through the official Python SDK's own session
+      # tracking, five of which crash, checked against an exact 0.95. Then the
+      # two things that only a real process can show: an hour already written
+      # is identical after an unclean restart while the sessions still in the
+      # window are gone (ADR 008), and a thousand sessions into a window of a
+      # hundred leave the server answering with its ceiling intact and the lost
+      # precision visible in the response. On the pull request rather than
+      # nightly: it takes about half a minute, and a crash-free rate that
+      # quietly became wrong is a number people make release decisions with.
+      - run: PORT=9913 ./scripts/health.sh
+      # The two release-health decoders that read bytes somebody else wrote.
+      # Both arrive on the public ingest endpoint (ADR 002), and one of them
+      # walks a list whose length the sender chooses.
+      - run: make fuzz-session
+
+  mcp:
+    name: MCP, both transports
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The fourth client of ADR 006, driven by the official MCP SDK's own
+      # client in compat/mcp — not by hand-written JSON-RPC, for the reason the
+      # SDK matrix exists: what is under test is whether software this project
+      # did not write can connect and call the tools (ADR 002).
+      #
+      # It runs the two transports in one pass and compares them, because the
+      # claim of ADR 022 is that there is one table and one API behind it: the
+      # tool list has to be identical over stdio and over HTTP, and the bundle
+      # has to be the same bytes the REST endpoint serves. It ends on the
+      # refusal — a read-only token calling resolve_issue — because that is
+      # where an MCP server that quietly bypassed the scope check would show
+      # up. On the pull request rather than nightly: it takes about twenty
+      # seconds, needs no container, and an agent that can write with a
+      # read-only token is not something to find out about a day later.
+      - run: PORT=9933 ./scripts/mcp.sh
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Everything else this product claims about itself is checked by
+      # something; the documentation was the one surface that was not. A flag
+      # renamed two months ago breaks no build and shows up in no metric — it
+      # is discovered by somebody who just installed this, pasted a command
+      # and got a usage error, and that person does not open an issue.
+      #
+      # It boots a real server, seeds the exact state the documents assume,
+      # and runs every block marked ```sh test against it; then it resolves
+      # every internal link and every anchor. On the pull request rather than
+      # nightly: it takes seconds, needs no container and no network, and what
+      # it protects is the first thing anyone runs (ADR 040).
+      - run: PORT=9953 ./scripts/docs.sh
+
+  bench:
+    name: Ingest throughput
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # ADR 001 publishes a sustained-volume target and ADR 009 makes this the
+      # judge of the pure-Go SQLite driver. Its own job, not part of the test
+      # suite: the suite runs under -race, where a throughput figure describes
+      # the race detector rather than the product.
+      #
+      # Two workloads since tracing exists: errors and transactions, at the same
+      # threshold. An installation that takes a hundred errors a second and
+      # forty transactions a second has kept half the promise.
+      - run: make bench
+      # What symbolication costs the same path, as its own measurement: a
+      # ratio between two runs rather than a throughput figure, so it belongs
+      # beside the benchmark and not inside it (ADR 018).
+      - run: make bench-sourcemap
+
+  compat:
+    name: SDK compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The matrix needs each language's runtime, because the suites are the
+      # official SDKs rather than this project's imitation of them.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Real SDKs against a real server. A hand-written envelope only tests
+      # this project's idea of what an SDK sends, which is the very thing in
+      # question (ADR 002). This tier is the three runtimes a Go developer
+      # already has — Go, Node and Python — because a gate that takes minutes
+      # on every push is a gate somebody switches off. The other three
+      # (browser, PHP, Dart) need a container each and run in nightly.yml.
+      - run: ./scripts/compat.sh --tier smoke
+
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit is signed off
+        run: |
+          missing=0
+          for sha in $(git rev-list origin/${{ github.base_ref }}..HEAD); do
+            if ! git log -1 --format=%B "$sha" | grep -qi '^Signed-off-by: .\+ <.\+@.\+>'; then
+              echo "missing Signed-off-by: $(git log -1 --oneline "$sha")"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || { echo "Use 'git commit -s'. See CONTRIBUTING.md."; exit 1; }
+
+# What is deliberately not here, and why:
+#   - The full SDK matrix (browser, PHP, Dart), the ten-minute fuzz run, the
+#     real install of a release and the container image all live in
+#     nightly.yml. The rule is in the execution spec: a gate that takes more
+#     than about three minutes, or that depends on something outside this
+#     repository, runs at night. Everything else runs on the pull request,
+#     where it can still stop a mistake from landing.

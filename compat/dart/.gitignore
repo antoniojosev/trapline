@@ -1,0 +1,5 @@
+# The SDK is a test fixture, not a dependency of the product (compat/README.md).
+# The lockfile is committed so the matrix pins what it ran against (ADR 002);
+# the tree it resolves is not.
+.dart_tool/
+.pub-cache/

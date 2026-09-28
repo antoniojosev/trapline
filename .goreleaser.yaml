@@ -1,0 +1,101 @@
+# goreleaser builds the release artifacts. It is a config file rather than a
+# project because the build has no C dependency: CGO stays off, so every
+# target cross-compiles from one machine (ADR 009).
+version: 2
+
+# Explicit rather than inferred from the checkout's directory name: the archive
+# name is part of the contract with scripts/install.sh, which downloads
+# trapline_<version>_<os>_<arch>.tar.gz, and a worktree or a fork checked out
+# under another name must not change what that script looks for.
+project_name: trapline
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: trapline
+    main: ./cmd/trapline
+    binary: trapline
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/antoniojosev/trapline/internal/adapters/cli.Version={{.Version}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    # The archive carries what an operator needs to run it as a service, not
+    # just the binary: the unit file and the installer are part of the product.
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - src: deploy/trapline.service
+        dst: trapline.service
+      - src: scripts/install.sh
+        dst: install.sh
+
+checksum:
+  name_template: checksums.txt
+
+# Named rather than read off the `origin` remote: the install script, the
+# image and the release all point at one repository by name, and a checkout
+# with no remote (a worktree, a mirror, a tarball) still has to be able to
+# run `goreleaser check` and build a snapshot.
+release:
+  github:
+    owner: antoniojosev
+    name: trapline
+
+# The container image, published alongside the archives. Dockerfile.goreleaser
+# is the copy-only twin of ./Dockerfile: goreleaser hands it the binaries it
+# just built, one per platform, so the image ships the same bytes as the
+# archive of the same release rather than a second compile with its own
+# chance to differ. One buildx build covers both architectures and pushes a
+# multi-platform manifest under each tag.
+dockers_v2:
+  - id: trapline
+    ids: [trapline]
+    dockerfile: Dockerfile.goreleaser
+    images:
+      - ghcr.io/antoniojosev/trapline
+    tags:
+      # The git tag as typed, `v` included, so that `docker pull
+      # ghcr.io/antoniojosev/trapline:v1.2.3` and `git checkout v1.2.3` name
+      # the same thing.
+      - "{{ .Tag }}"
+      # `latest` moves only for a real release: a pre-release tag (v1.3.0-rc1)
+      # publishes its own image and leaves `latest` where it was.
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    # A snapshot (`--snapshot`, what scripts/install-test.sh runs nightly) has
+    # no registry to push to and, inside the goreleaser container, no daemon
+    # to build with. It is a build of the archives, not of the image.
+    disable: "{{ .IsSnapshot }}"
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "Error tracking in a single binary"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.source: "https://github.com/antoniojosev/trapline"
+      org.opencontainers.image.licenses: "AGPL-3.0-only"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

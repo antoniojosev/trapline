@@ -1,0 +1,2998 @@
+# The frozen API, written by hand and checked by a test.
+#
+# Hand-written on purpose. A document generated from the handlers would agree
+# with the code by construction and would therefore never catch anything: it
+# would rename a field the moment somebody renamed a struct tag, and call that
+# "up to date". This one is a second opinion, and `TestRoutesMatchOpenAPI`
+# (internal/adapters/httpapi/openapi_test.go) is what keeps the two honest
+# about the part that matters most — that every route this binary serves is
+# written down here, and that nothing written down here has stopped existing.
+#
+# What "frozen" means, from the release that shipped this file:
+#   - a route may be ADDED;
+#   - a response may gain a field;
+#   - a request may gain an OPTIONAL field;
+#   - nothing may be removed, renamed, or have its meaning changed, under
+#     /api/v1/, without a new version prefix (ADR 006).
+#
+# Not described here: the `/api/0/` surface this server answers so that
+# `sentry-cli` works. It is not this product's API — it is somebody else's
+# protocol, implemented from recorded traffic and specified by
+# `compat/sentry-cli/fixtures/`, and it is deliberately unversioned and
+# unfrozen (ADR 013). Documenting it here would tell a reader it is a contract
+# they may build on. It is not; it is an emulation that tracks whatever the
+# pinned `sentry-cli` does.
+openapi: 3.1.0
+
+info:
+  title: trapline API
+  version: "1.0"
+  summary: Errors, releases, alerts, monitors, tracing and release health for one installation.
+  description: |
+    One API, four clients: this REST surface, the `trapline` CLI, the web
+    panel, and MCP (ADR 006). Everything the panel can do is reachable here,
+    because the panel is a client of this and not a privileged insider.
+
+    **Authentication.** Two credentials, one gate. A browser session carries a
+    `SameSite=Lax` cookie and must send `X-Trapline-Request` on every
+    state-changing request (the custom-header CSRF defence). A program carries
+    `Authorization: Bearer ek_…` and sends no such header, because a bearer
+    token is not ambient and there is nothing to forge.
+
+    **Scopes.** Coarse on purpose. `projects:read|write` covers issues, stats,
+    releases, tracing, artefacts and health. `alerts:read|write` is separate
+    because an alert channel holds a credential for somebody else's system.
+    `monitors:read|write` is separate because a ping key is a credential, and
+    because creating an uptime monitor is the permission to make this server
+    open outbound connections to an address the caller chose (ADR 016).
+
+    **Errors.** One shape for every failure: `{"error": "…"}`, with a status
+    code that means what it says. A 400 from a search is a search that could
+    not run, which is not the same as a search that found nothing (ADR 011).
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+
+servers:
+  - url: /api/v1
+    description: The frozen API.
+  - url: /api/v1-beta
+    description: |
+      The pre-freeze prefix. Every route below is also served here, with
+      `Deprecation: true` and a `Link: </api/v1>; rel="successor-version"`
+      header. It goes away one minor release after the freeze; it exists so a
+      client written against the beta keeps working while it is updated, not
+      so it never has to be.
+
+security:
+  - sessionCookie: []
+  - bearerToken: []
+
+tags:
+  - name: session
+    description: Setting the installation up, and the two ends of a session.
+  - name: projects
+    description: Projects, their DSN keys and their ingest profile.
+  - name: issues
+    description: Grouped errors, their events and their triage state.
+  - name: stats
+    description: The dashboard, read from hourly aggregates and never from events (ADR 010).
+  - name: releases
+    description: Releases, commits and deploys — the deploy pipeline's half of the API (ADR 012).
+  - name: alerts
+    description: Channels, rules, the outbox, and the weekly digest (ADR 015).
+  - name: monitors
+    description: Cron and uptime — one concept watched from two sides (ADR 016, ADR 037).
+  - name: tracing
+    description: What is slow, what is failing, and the stored waterfalls (ADR 021).
+  - name: artifacts
+    description: Uploaded scripts and source maps (ADR 018).
+  - name: health
+    description: Crash-free rate per release, counted without storing a session (ADR 008).
+  - name: system
+    description: What the process is doing, and installation-wide settings.
+  - name: ingest
+    description: The unversioned public surfaces — SDKs, cron pings, the status page.
+  - name: mcp
+    description: |
+      The fourth client (ADR 006): the same operations as tools an agent can
+      call, over one endpoint. Unversioned for the reason the surfaces above
+      are — the path is somebody else's convention (ADR 022).
+
+paths:
+  # ---------------------------------------------------------------- session
+  /health:
+    get:
+      tags: [session]
+      summary: Liveness.
+      description: |
+        What a supervisor or a load balancer polls. Unauthenticated by
+        necessity, and it returns nothing an unauthenticated caller should not
+        see: no version, no counts, no configuration.
+      security: []
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+
+  /setup:
+    get:
+      tags: [session]
+      summary: Whether this installation still needs its first administrator.
+      security: []
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  needs_setup: { type: boolean }
+    post:
+      tags: [session]
+      summary: Create the first administrator.
+      description: |
+        Closes itself after one use: a second call is refused. Rate-limited
+        per address, because it spends an Argon2id hash (ADR 023).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "200":
+          description: The administrator that now exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Admin" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Setup has already been done.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /login:
+    post:
+      tags: [session]
+      summary: Open a session.
+      description: Sets the session cookie. Rate-limited per address (ADR 023).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "200":
+          description: The cookie is set.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /logout:
+    post:
+      tags: [session]
+      summary: Close a session.
+      description: |
+        Public, because a request carrying a dead cookie must still be able to
+        clear it. Requiring a live session to log out would strand a user
+        whose session had already expired.
+      security: []
+      responses:
+        "200":
+          description: The cookie is cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /me:
+    get:
+      tags: [session]
+      summary: Who the current credential belongs to.
+      responses:
+        "200":
+          description: The administrator.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Admin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # --------------------------------------------------------------- projects
+  /projects:
+    get:
+      tags: [projects]
+      summary: Every project.
+      responses:
+        "200":
+          description: The list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Project" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [projects]
+      summary: Create a project, with its first DSN key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201":
+          description: The project, with the DSN to paste into an SDK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /projects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [projects]
+      summary: One project and its keys.
+      responses:
+        "200":
+          description: The project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [projects]
+      summary: Delete a project and everything it holds.
+      responses:
+        "200":
+          description: Gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/keys:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    post:
+      tags: [projects]
+      summary: Mint another DSN key.
+      description: |
+        Rotation is additive: the new key is returned and the old ones keep
+        working until they are revoked, so a deploy can be done in either
+        order without dropping events.
+      responses:
+        "201":
+          description: The new key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Key" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /keys/{publicKey}:
+    parameters:
+      - name: publicKey
+        in: path
+        required: true
+        schema: { type: string }
+        description: The public half of the DSN, which is the part that travels.
+    delete:
+      tags: [projects]
+      summary: Revoke a DSN key.
+      responses:
+        "200":
+          description: Revoked. Events presenting it are refused from now on.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/config:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [projects]
+      summary: The ingest profile — what this project accepts and for how long.
+      responses:
+        "200":
+          description: The profile, with the defaults beside it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [projects]
+      summary: Change the ingest profile.
+      description: |
+        Every field is optional and an absent field is left alone, so a client
+        that knows about one knob does not have to send back the others it has
+        never heard of. A category switched off costs nothing: the SDK is told
+        to stop, with the protocol's own rate-limit response (ADR 005).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectConfigChange" }
+      responses:
+        "200":
+          description: The profile as it now stands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------- issues
+  /projects/{id}/issues:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [issues]
+      summary: A page of issues, filtered and searched.
+      description: |
+        Keyset pagination: `next_cursor` is opaque and is handed back as
+        `cursor`. Search goes through FTS5 over issue titles and never over
+        event payloads (ADR 001, ADR 011), so a query the index cannot run
+        answers 400 and says why rather than answering "no results".
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/IssueStatus" }
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Free text over title, culprit and the last message seen.
+        - name: environment
+          in: query
+          schema: { type: string }
+        - name: release
+          in: query
+          schema: { type: string }
+        - name: tag
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { type: string }
+          description: 'Repeatable, each `key:value`.'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: The page, with the per-status counts the tabs need.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuePage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/issues/{issueID}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/IssueID"
+    get:
+      tags: [issues]
+      summary: One issue, its recent events and its tag distribution.
+      responses:
+        "200":
+          description: The issue.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssueDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/issues/{issueID}/status:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/IssueID"
+    post:
+      tags: [issues]
+      summary: Resolve, ignore or reopen.
+      description: |
+        `in_next_release` qualifies `resolved`: fixed, and the fix ships next,
+        so events still arriving from the release it is being seen in are
+        expected rather than proof the fix failed. Those events are counted
+        and exposed as `seen_in_resolved_release_count`; they do not reopen
+        the issue (ADR 012).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/IssueStatus" }
+                in_next_release: { type: boolean, default: false }
+      responses:
+        "200":
+          description: The status it now has.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { $ref: "#/components/schemas/IssueStatus" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/issues/{issueID}/suspects:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/IssueID"
+    get:
+      tags: [issues]
+      summary: Which change probably caused this issue.
+      description: |
+        Candidate commits from the release the issue was first seen in,
+        crossed with the stacktrace by path suffix, with frames nearer the
+        failure weighing more (ADR 019). No integration with any forge: the
+        paths come from `set-commits --local` or from this product's own CLI.
+        An empty answer carries a `warning` that says what to do about it.
+      responses:
+        "200":
+          description: The guess, its reasons, and the candidates ruled out.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuspectsReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/issues/{issueID}/bundle:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/IssueID"
+    get:
+      tags: [issues]
+      summary: One issue as a markdown document, for an agent to read.
+      description: |
+        Everything needed to fix the bug, in one request instead of five: the
+        symbolicated stacktrace with source context and the minified frame it
+        came from (ADR 018), the breadcrumbs, the aggregated tags and
+        contexts, the release lifecycle, how often it has happened in the last
+        24 hours and the last fortnight — read from the hourly aggregates, so
+        it still answers after the events have been deleted (ADR 010) — and
+        the commits that probably caused it (ADR 019).
+
+        The only route in this document that does not answer JSON. The reader
+        is a language model, and a document with headings costs it less than a
+        record whose shape it has to re-derive from field names on every call
+        (ADR 022). The JSON form has not moved: it is
+        `GET /projects/{id}/issues/{issueID}`.
+
+        The rendering is deterministic: the same issue renders to the same
+        bytes, because an agent's prompt cache is keyed on the text and
+        diffing two bundles is how somebody checks whether an issue changed.
+      responses:
+        "200":
+          description: The document.
+          content:
+            text/markdown:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/events/stream:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [issues]
+      summary: The live feed, as server-sent events.
+      description: |
+        Event names are `issue.new`, `issue.regressed` and `issue.updated`,
+        with a heartbeat comment every 25 seconds so an idle proxy does not
+        close the connection. Behind the same guard as everything else: a
+        stream that skipped authentication because it is "only notifications"
+        would leak every issue title in the installation.
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ------------------------------------------------------------------ stats
+  /projects/{id}/stats:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/From"
+      - $ref: "#/components/parameters/To"
+    get:
+      tags: [stats]
+      summary: Events per hour, and the totals per level.
+      responses:
+        "200":
+          description: The series.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectSeries" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/stats/top:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/From"
+      - $ref: "#/components/parameters/To"
+      - $ref: "#/components/parameters/Limit"
+    get:
+      tags: [stats]
+      summary: The noisiest issues of the range.
+      responses:
+        "200":
+          description: The ranking, each row carrying the issue itself.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TopIssues" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/stats/breakdown:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/From"
+      - $ref: "#/components/parameters/To"
+      - $ref: "#/components/parameters/Limit"
+      - name: by
+        in: query
+        required: true
+        schema: { type: string, enum: [release, environment] }
+        description: |
+          The two facets every event carries, which is why they have their own
+          aggregate and arbitrary tags do not (ADR 010).
+    get:
+      tags: [stats]
+      summary: '"Which deploy did this" and "is it only staging".'
+      responses:
+        "200":
+          description: The counts per value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Breakdown" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/stats/series:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - name: issues
+        in: query
+        required: true
+        schema: { type: string }
+        description: Comma-separated issue ids.
+      - $ref: "#/components/parameters/Window"
+    get:
+      tags: [stats]
+      summary: One request for a whole page of sparklines.
+      description: |
+        Never one call per row: twenty-five rows would be twenty-five round
+        trips for a decoration, and the list would visibly fill in from the
+        top.
+      responses:
+        "200":
+          description: The hours, once, and one array of counts per issue.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sparklines" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/issues/{issueID}/stats:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/IssueID"
+      - $ref: "#/components/parameters/Window"
+    get:
+      tags: [stats]
+      summary: One issue's own history.
+      responses:
+        "200":
+          description: The series.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssueSeries" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --------------------------------------------------------------- releases
+  /projects/{id}/releases:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [releases]
+      summary: Every release, newest first.
+      description: |
+        Ordered by semver when the versions parse as semver, and by first
+        event otherwise; an unknown version sorts as newer than a known one
+        (ADR 012).
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: The list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  releases:
+                    type: array
+                    items: { $ref: "#/components/schemas/Release" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [releases]
+      summary: Declare a release before its first event.
+      description: |
+        A release also appears on its own the first time an event names it, so
+        this is for a deploy pipeline that wants to attach commits or a deploy
+        before any traffic arrives.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                date_released: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: The release.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Release" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/releases/{version}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/ReleaseVersion"
+    get:
+      tags: [releases]
+      summary: One release, its commits and its deploys.
+      responses:
+        "200":
+          description: The release.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [releases]
+      summary: Finalise a release.
+      description: |
+        PUT because finalising twice is the same as finalising once: the
+        second call keeps the first date.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                date_released: { type: string, format: date-time }
+      responses:
+        "200":
+          description: The release, finalised.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Release" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/releases/{version}/commits:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/ReleaseVersion"
+    post:
+      tags: [releases]
+      summary: Attach the commit set, with the files each commit touched.
+      description: |
+        The `patch_set` is what makes suspect commits possible (ADR 019):
+        without it the commits are still listed, but nothing can be accused.
+        It replaces the release's commit set rather than appending to it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commits]
+              properties:
+                commits:
+                  type: array
+                  items: { $ref: "#/components/schemas/Commit" }
+      responses:
+        "200":
+          description: The release, with the commits now attached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/releases/{version}/deploys:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/ReleaseVersion"
+    post:
+      tags: [releases]
+      summary: Record a deploy of this release to an environment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment]
+              properties:
+                environment: { type: string }
+                name: { type: string }
+                url: { type: string }
+                started_at: { type: string, format: date-time }
+                finished_at: { type: string, format: date-time }
+      responses:
+        "201":
+          description: The deploy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deploy" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------- alerts
+  /alerts/channels:
+    get:
+      tags: [alerts]
+      summary: Every alert channel.
+      description: |
+        The stored credential is never returned. `config` comes back with the
+        secret fields blanked, because this endpoint exists to show what is
+        configured and not to hand the bot token back to whoever asked.
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:read]
+      responses:
+        "200":
+          description: The channels.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channels:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [alerts]
+      summary: Configure a channel.
+      description: |
+        The credential is encrypted at rest with AES-256-GCM under the key
+        file beside the database, which is why a backup of the `.db` alone
+        cannot deliver an alert (ADR 015).
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, name, config]
+              properties:
+                type: { $ref: "#/components/schemas/ChannelType" }
+                name: { type: string }
+                config: { $ref: "#/components/schemas/ChannelConfig" }
+                digest: { type: boolean, default: false }
+      responses:
+        "201":
+          description: The channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /alerts/channels/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    delete:
+      tags: [alerts]
+      summary: Remove a channel.
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:write]
+      responses:
+        "204": { description: Gone. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /alerts/channels/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      tags: [alerts]
+      summary: Deliver a sample message now.
+      description: |
+        The one check that proves the credential, which no amount of probing
+        can: a bot token is only proven by using it. A write, even though it
+        changes nothing here, because it spends a real delivery through
+        somebody else's rate-limited API.
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:write]
+      responses:
+        "200":
+          description: It went through.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  error: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502":
+          description: The far end refused, in its own words.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: false }
+                  error: { type: string }
+
+  /alerts/rules:
+    get:
+      tags: [alerts]
+      summary: Every alert rule.
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:read]
+      parameters:
+        - name: project_id
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: |
+            Narrow to one project. Rules with a null `project_id` cover every
+            project and are returned whatever this says, because leaving them
+            out would be a filtered list that hides the rule most likely to
+            have fired.
+      responses:
+        "200":
+          description: The rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items: { $ref: "#/components/schemas/AlertRule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [alerts]
+      summary: Create a rule.
+      description: |
+        `project_id` null means every project. `silence_seconds` is the dedupe
+        window per subject, persisted rather than held in memory so a restart
+        neither loses it nor fires twice (ADR 015).
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, trigger, channel_ids]
+              properties:
+                project_id: { type: integer, format: int64, nullable: true }
+                name: { type: string }
+                trigger: { $ref: "#/components/schemas/Trigger" }
+                channel_ids:
+                  type: array
+                  items: { type: integer, format: int64 }
+                silence_seconds: { type: integer, minimum: 0 }
+      responses:
+        "201":
+          description: The rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlertRule" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /alerts/rules/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    delete:
+      tags: [alerts]
+      summary: Remove a rule.
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:write]
+      responses:
+        "204": { description: Gone. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /alerts/rules/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      tags: [alerts]
+      summary: Send a synthetic alert through this rule's channels.
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:write]
+      responses:
+        "200":
+          description: One result per channel.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        channel_id: { type: integer, format: int64 }
+                        name: { type: string }
+                        type: { $ref: "#/components/schemas/ChannelType" }
+                        ok: { type: boolean }
+                        error: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /alerts/notifications:
+    get:
+      tags: [alerts]
+      summary: The outbox.
+      description: |
+        Every notification ever queued, with its attempts and its last error.
+        A notification is written in the same transaction as the issue it
+        talks about, so this is also the record of what the installation
+        believed at the time (ADR 015).
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:read]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, sent, failed, dead] }
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: The notifications.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: "#/components/schemas/Notification" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /alerts/notifications/{id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      tags: [alerts]
+      summary: Put a dead notification back in the queue.
+      security:
+        - sessionCookie: []
+        - bearerToken: [alerts:write]
+      responses:
+        "200":
+          description: The notification, pending again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Notification" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /digest/preview:
+    post:
+      tags: [alerts]
+      summary: What the weekly report would say, rendered now.
+      description: |
+        Deterministic: the same history renders the same bytes, which is what
+        makes the golden fixtures of `internal/digest` mean anything
+        (ADR 035).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_id: { type: integer, format: int64 }
+                at: { type: string, description: 'The instant to render as of, RFC 3339.' }
+      responses:
+        "200":
+          description: The rendered text and the structured report behind it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DigestPreview" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------- system
+  /system/jobs:
+    get:
+      tags: [system]
+      summary: What is running in the background.
+      description: |
+        A job exists only if its subsystem has work to do, and a subsystem
+        with nothing to do has no goroutine at all (ADR 005, ADR 014). So an
+        empty list is the honest description of a quiet installation, not a
+        scheduler that failed to start.
+      responses:
+        "200":
+          description: The jobs, with their last run and their last error.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /system/channels:
+    get:
+      tags: [system]
+      summary: Whether the alarm would actually ring.
+      description: |
+        Every channel probed for connectivity and its stored secret checked
+        against the key that is supposed to open it. Nothing is sent, so this
+        costs the probe timeout on an unreachable host — which is why it is
+        asked for rather than run on load (ADR 035).
+      responses:
+        "200":
+          description: One diagnosis per channel, the secret and the network kept apart.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelHealth" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /system/settings/digest:
+    get:
+      tags: [system]
+      summary: When the weekly report goes out.
+      responses:
+        "200":
+          description: The schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DigestSchedule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [system]
+      summary: Move the weekly report.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weekday, hour]
+              properties:
+                weekday:
+                  type: string
+                  enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+                hour: { type: integer, minimum: 0, maximum: 23 }
+      responses:
+        "200":
+          description: The schedule as it now stands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DigestSchedule" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /system/settings/status-page:
+    get:
+      tags: [system]
+      summary: The public status page's heading.
+      description: |
+        An installation-wide setting written by an operator. What makes the
+        status page public is the page, not this endpoint (ADR 017).
+      responses:
+        "200":
+          description: The title and description.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPageSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [system]
+      summary: Change the status page's heading.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusPageSettings" }
+      responses:
+        "200":
+          description: The heading as it now stands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPageSettings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # --------------------------------------------------------------- monitors
+  /projects/{id}/monitors/cron:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [monitors]
+      summary: Every cron monitor of a project.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:read]
+      responses:
+        "200":
+          description: The monitors, each with its ping URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  monitors:
+                    type: array
+                    items: { $ref: "#/components/schemas/CronMonitor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [monitors]
+      summary: Declare a cron monitor.
+      description: |
+        A monitor also appears on its own when an SDK sends a `check_in` item
+        carrying a `monitor_config`, which is how instrumenting a job costs
+        one line. This is the other way in (ADR 016).
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, schedule]
+              properties:
+                slug: { type: string }
+                schedule:
+                  type: string
+                  description: 'A five-field crontab expression, or `@hourly`/`@daily`/`@weekly`/`@monthly`, or an interval like `30m`.'
+                timezone: { type: string, description: An IANA zone name. }
+                checkin_margin_s: { type: integer, minimum: 0 }
+                max_runtime_s: { type: integer, minimum: 0 }
+      responses:
+        "201":
+          description: The monitor, with the ping key that is its credential.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CronMonitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/monitors/cron/{monitorID}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/MonitorID"
+    get:
+      tags: [monitors]
+      summary: One cron monitor.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:read]
+      responses:
+        "200":
+          description: The monitor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CronMonitor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [monitors]
+      summary: Edit a cron monitor.
+      description: |
+        PUT because an edit is idempotent: sending the same body twice leaves
+        the same monitor, and every field is optional so a partial edit is not
+        a second verb.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schedule: { type: string }
+                timezone: { type: string }
+                checkin_margin_s: { type: integer, minimum: 0 }
+                max_runtime_s: { type: integer, minimum: 0 }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The monitor as it now stands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CronMonitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [monitors]
+      summary: Remove a cron monitor.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:write]
+      responses:
+        "204": { description: Gone. Its ping key stops answering. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/monitors/cron/{monitorID}/checkins:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/MonitorID"
+      - $ref: "#/components/parameters/Limit"
+    get:
+      tags: [monitors]
+      summary: What this job has reported, newest first.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:read]
+      responses:
+        "200":
+          description: The check-ins.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkins:
+                    type: array
+                    items: { $ref: "#/components/schemas/CronCheckIn" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/monitors/uptime:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [monitors]
+      summary: Every uptime monitor of a project.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:read]
+      responses:
+        "200":
+          description: The monitors.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  monitors:
+                    type: array
+                    items: { $ref: "#/components/schemas/UptimeMonitor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [monitors]
+      summary: Watch a URL.
+      description: |
+        The address is resolved and checked against the SSRF policy before
+        anything is stored, and again before every check; the dial goes to the
+        address that was validated and never to the name, which is what makes
+        DNS rebinding not work (ADR 016). A private address is refused unless
+        the monitor asks for it *and* the server was started with
+        `-uptime-allow-private`.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url]
+              properties:
+                name: { type: string }
+                url: { type: string, format: uri }
+                method: { type: string, enum: [GET, HEAD] }
+                interval_s: { type: integer, minimum: 30 }
+                timeout_s: { type: integer, minimum: 1 }
+                expected_status_min: { type: integer }
+                expected_status_max: { type: integer }
+                expected_body_substring: { type: string }
+                follow_redirects: { type: boolean }
+                allow_private: { type: boolean }
+                public:
+                  type: boolean
+                  description: Whether this monitor appears on the public status page.
+      responses:
+        "201":
+          description: The monitor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UptimeMonitor" }
+        "400":
+          description: |
+            Malformed, or an address the SSRF guard refuses. The message says
+            which, because "invalid URL" for a private address sends somebody
+            looking for a typo that is not there.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /monitors/uptime/{monitorID}:
+    parameters:
+      - $ref: "#/components/parameters/MonitorID"
+    get:
+      tags: [monitors]
+      summary: One uptime monitor.
+      description: |
+        Not under a project, unlike its cron twin. A monitor id is unique
+        across the installation and the links this product sends out carry
+        only the id, so the route that a notification points at cannot need a
+        project it does not know (ADR 037).
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:read]
+      responses:
+        "200":
+          description: The monitor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UptimeMonitor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [monitors]
+      summary: Stop watching a URL, and forget its history.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:write]
+      responses:
+        "204": { description: Gone. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /monitors/uptime/{monitorID}/enabled:
+    parameters:
+      - $ref: "#/components/parameters/MonitorID"
+    post:
+      tags: [monitors]
+      summary: Pause or resume a monitor.
+      description: |
+        A pause during planned maintenance, rather than deleting the monitor
+        and losing the ninety days of history that make the uptime figure mean
+        anything.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The monitor as it now stands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UptimeMonitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /monitors/uptime/{monitorID}/results:
+    parameters:
+      - $ref: "#/components/parameters/MonitorID"
+      - $ref: "#/components/parameters/Limit"
+    get:
+      tags: [monitors]
+      summary: The individual checks, newest first.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:read]
+      responses:
+        "200":
+          description: The checks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/UptimeCheck" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /monitors/uptime/{monitorID}/daily:
+    parameters:
+      - $ref: "#/components/parameters/MonitorID"
+      - name: days
+        in: query
+        schema: { type: integer, minimum: 1, default: 90 }
+    get:
+      tags: [monitors]
+      summary: The ninety-day bar, one row per day.
+      description: |
+        Read from the daily aggregate and never by counting the individual
+        checks, which is the same rule the dashboard follows (ADR 001,
+        ADR 017): the aggregate outlives the checks' retention, so the bar
+        stays complete after the raw results are gone.
+      security:
+        - sessionCookie: []
+        - bearerToken: [monitors:read]
+      responses:
+        "200":
+          description: The days.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days:
+                    type: array
+                    items: { $ref: "#/components/schemas/UptimeDay" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- tracing
+  /projects/{id}/transactions:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/From"
+      - $ref: "#/components/parameters/To"
+      - $ref: "#/components/parameters/Limit"
+      - name: sort
+        in: query
+        schema: { type: string, enum: [p95, count, fail], default: p95 }
+        description: |
+          Three questions, one table: what is slow (`p95`), what is busy
+          (`count`), and what is breaking (`fail`) — which a latency chart
+          never shows, because a request that fails fast looks fast.
+    get:
+      tags: [tracing]
+      summary: What is slow, what is busy, what is failing.
+      description: |
+        The percentiles are computed at read time by merging the stored
+        sketches over the range, and are never persisted: a percentile is not
+        composable, so a stored one is only true for the window it was stored
+        for (ADR 007, ADR 020).
+
+        `sampling` rides along because a sampled feature that does not say so
+        misleads: somebody comparing `count` against their load balancer needs
+        to know which number was sampled and by how much. The aggregates cover
+        every transaction received; sampling decides only whether the raw
+        waterfall was kept (ADR 021).
+      responses:
+        "200":
+          description: The ranked table.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransactionList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/transactions/{name}/series:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+        description: |
+          The transaction name, percent-encoded. It is in the path rather than
+          in a query parameter because it is an identifier, not a filter, and
+          a path segment is what makes "this transaction" a resource a client
+          can link to.
+      - $ref: "#/components/parameters/From"
+      - $ref: "#/components/parameters/To"
+      - name: resolution
+        in: query
+        schema: { type: string, enum: [minute, hour], default: minute }
+        description: |
+          The caller's rather than derived from the range, because the two
+          answer different questions: minutes are for "what happened during
+          the incident", hours are for "did the fix hold". Minutes are kept
+          for 48 hours; hours for the project's transaction retention.
+    get:
+      tags: [tracing]
+      summary: One transaction's history, with example waterfalls.
+      description: |
+        `summary` is the whole range merged, not the average of the points:
+        averaging percentiles is exactly the mistake ADR 007 exists to
+        prevent. `examples` are the slowest stored traces, riding along
+        because the question after "this got slower" is always "show me one".
+      responses:
+        "200":
+          description: The series.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransactionSeries" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/traces/{traceID}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - name: traceID
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [tracing]
+      summary: One waterfall.
+      description: |
+        Stored whole or not at all. The sampling decision is a hash of the
+        trace id, so every transaction of one trace shares its fate: the gaps
+        of the alternative look exactly like instrumentation nobody added
+        (ADR 021).
+      responses:
+        "200":
+          description: The trace and its spans.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: |
+            No such trace — which, for a sampled project, usually means it was
+            not kept rather than that it never happened.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # -------------------------------------------------------------- artifacts
+  /projects/{id}/artifacts:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      tags: [artifacts]
+      summary: The scripts and source maps this project holds.
+      parameters:
+        - name: release
+          in: query
+          schema: { type: string }
+        - name: dist
+          in: query
+          schema: { type: string }
+        - name: debug_id
+          in: query
+          schema: { type: string }
+        - name: name
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: The artefacts, with the budget they are spending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [artifacts]
+      summary: Upload an artifact bundle.
+      description: |
+        The one route in this API whose body is not JSON: it is the ZIP
+        itself, with the `manifest.json` that names each file's debug id
+        (ADR 018). Limits apply to what the archive *expands* to and not to
+        the size it declares, and the budget is charged here, where the
+        project is known (ADR 038).
+
+        `sentry-cli` does not use this route — it speaks the emulated
+        `/api/0/` surface, which is not part of this contract (ADR 013).
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema: { type: string, format: binary }
+      parameters:
+        - name: release
+          in: query
+          schema: { type: string }
+        - name: dist
+          in: query
+          schema: { type: string }
+      responses:
+        "201":
+          description: What was stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413":
+          description: The project's artefact budget is spent (`config.artifacts_max_mb`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /projects/{id}/artifacts/{artifactID}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - name: artifactID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    delete:
+      tags: [artifacts]
+      summary: Delete one artefact.
+      responses:
+        "204": { description: Gone. Frames it used to resolve stop resolving. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------- health
+  /projects/{id}/health:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/From"
+      - $ref: "#/components/parameters/To"
+      - $ref: "#/components/parameters/Limit"
+    get:
+      tags: [health]
+      summary: Which release is the bad one.
+      description: |
+        Every release that reported sessions in the range, ranked. This is the
+        question somebody opens the page with — not "how is 1.4.2 doing" —
+        and making them guess a version to find out would be the page refusing
+        to answer its own first question.
+
+        Counted from four counters per (release, environment, hour). No row is
+        ever written per session (ADR 008).
+      responses:
+        "200":
+          description: The releases, and the state of the in-memory window.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectHealth" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/releases/{version}/health:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/ReleaseVersion"
+      - $ref: "#/components/parameters/From"
+      - $ref: "#/components/parameters/To"
+    get:
+      tags: [health]
+      summary: How this version is doing.
+      description: |
+        `crash_free_rate` is `1 − crashed/started`, and is **null** for an
+        hour nothing reported in: a zero would read as "everything crashed"
+        and a one as "everything was fine", and both are claims about an hour
+        with no data.
+
+        `window` says out loud what a restart costs. Sessions in flight live
+        in a bounded in-memory window, and a restart loses them; the note is
+        in every response rather than on a diagnostics page nobody opens,
+        because the only place a caveat is read is beside the number it
+        applies to (ADR 008).
+      responses:
+        "200":
+          description: The release's counters, hour by hour.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseHealth" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------- the unversioned surfaces
+  #
+  # Three paths with no version in them, and none of them will ever get one,
+  # because none of their callers could follow a version bump: an SDK builds
+  # the ingest path out of a DSN, a crontab line builds the ping path out of a
+  # key, and a stranger opens the status page in a browser. They carry their
+  # own `servers` because they hang off the root and not off /api/v1.
+  /api/{projectID}/envelope/:
+    servers:
+      - url: /
+        description: The root. These paths are not under the versioned prefix.
+    parameters:
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    post:
+      tags: [ingest]
+      summary: The Sentry envelope endpoint.
+      description: |
+        The protocol owns this path, not this product: SDKs build it from a
+        DSN and it cannot move (ADR 002). Authenticated by the DSN key, in
+        `X-Sentry-Auth` or in `?sentry_key=`, never by a session — so it is
+        the one surface without the CSRF header, because there is no ambient
+        credential to forge, and the one surface that answers cross-origin,
+        because a browser SDK reaches it from a page this server did not
+        serve.
+
+        Unknown item types are accepted and ignored rather than refused: an
+        SDK three versions newer must not fail against this server (ADR 002).
+        A switched-off category answers with the protocol's own rate-limit
+        headers, which is what makes it free rather than merely silent
+        (ADR 005).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-sentry-envelope:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: No key, or a key that has been revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: The body, or what it decompresses to, is over the ceiling.
+        "429":
+          description: |
+            Over the project's rate limit, or over the per-address one. Carries
+            `X-Sentry-Rate-Limits` / `Retry-After` so the SDK backs off instead
+            of retrying into the wall (ADR 005, ADR 023).
+    options:
+      tags: [ingest]
+      summary: The CORS preflight a browser sends before the POST above.
+      description: |
+        Deliberately not rate-limited. It reads nothing, parses nothing and
+        touches no storage — it answers from constants — so it is not the cost
+        the per-address guard exists to bound. Charging it would spend a
+        page's budget twice for one event (ADR 023, ADR 030).
+      security: []
+      responses:
+        "204":
+          description: The policy.
+          headers:
+            Access-Control-Allow-Origin:
+              schema: { type: string }
+            Access-Control-Allow-Headers:
+              schema: { type: string }
+
+  /ping/{pingKey}:
+    servers:
+      - url: /
+    parameters:
+      - name: pingKey
+        in: path
+        required: true
+        schema: { type: string }
+        description: |
+          The monitor's ping key, which **is** the credential — anything
+          holding it can report a backup as successful from anywhere on the
+          internet (ADR 016). A trailing `/start` or `/fail` selects the
+          check-in's status; the bare key means success.
+    get:
+      tags: [ingest]
+      summary: Report a cron check-in from a crontab line.
+      description: |
+        Unauthenticated in the usual sense and rate-limited per address, and
+        it answers one line of `text/plain` because the client is `curl`
+        appended to a cron job. GET as well as POST: half the schedulers that
+        can call a URL only send GET, and a surface that refused it would work
+        for curl and quietly not for them.
+      security: []
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            text/plain:
+              schema: { type: string }
+        "404": { description: No monitor holds that key. }
+        "410": { description: The monitor exists but is disabled. }
+        "429": { description: Over the per-address limit. }
+    post:
+      tags: [ingest]
+      summary: The same surface, for a client that can only POST.
+      security: []
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            text/plain:
+              schema: { type: string }
+        "404": { description: No monitor holds that key. }
+        "410": { description: The monitor exists but is disabled. }
+        "429": { description: Over the per-address limit. }
+
+  /mcp:
+    servers:
+      - url: /
+    post:
+      tags: [mcp]
+      summary: The Model Context Protocol endpoint — the fourth client.
+      description: |
+        One JSON-RPC request per call, streamable HTTP in its stateless form:
+        no `Mcp-Session-Id`, no event stream, and `GET` and `DELETE` on this
+        path answer 405. The tools are the ones `trapline mcp` serves over
+        stdio, from one table, and the gate asserts `tools/list` is identical
+        on both (ADR 022).
+
+        Outside `/api/v1/` on purpose. An MCP client's URL lives in a
+        configuration file that a version bump could not rewrite, and `/mcp`
+        is that protocol's convention rather than this product's — the same
+        reason the ingest path and the ping surface are unversioned.
+
+        Authenticated by bearer token only, never by the session cookie, so
+        the CSRF header the rest of this API requires on writes is not
+        required here: there is no ambient credential to forge. A token needs
+        `projects:read` to connect; every tool's own call is then made with
+        the same token and re-checked against the scope its route demands, so
+        `resolve_issue` is refused for a read-only token by the same line of
+        code that refuses `POST .../status`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: A JSON-RPC 2.0 request, as the MCP specification defines it.
+      responses:
+        "200":
+          description: The JSON-RPC response.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: A JSON-RPC 2.0 response. A tool that failed reports it in `result.isError`.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /status/{slug}:
+    servers:
+      - url: /
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+        description: The project slug.
+    get:
+      tags: [ingest]
+      summary: The public status page.
+      description: |
+        HTML rendered on the server, no JavaScript required, cached for 30
+        seconds, rate-limited per address, and served only if the project has
+        switched it on. The figures come from the daily aggregate and never
+        from the individual checks (ADR 001, ADR 017). It is a page, not an
+        endpoint: it is described here so that the route gate can see it, not
+        because anything should parse it.
+      security: []
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html:
+              schema: { type: string }
+        "404": { description: No such project, or its status page is off. }
+        "429": { description: Over the per-address limit. }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: trapline_session
+      description: |
+        The panel's credential. `SameSite=Lax`, `HttpOnly`, and `Secure` when
+        the server knows it is behind TLS. Because it is ambient, every
+        state-changing request must also carry `X-Trapline-Request` with any
+        value; without it the request is refused with 403. A browser cannot
+        set a custom header cross-origin without a preflight, and no
+        permissive CORS policy is served for one to pass — which is the whole
+        defence, in one header and no token plumbing.
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: ek_...
+      description: |
+        A program's credential, carrying scopes. Not ambient, so it needs no
+        CSRF header. Scopes are `projects:read`, `projects:write`,
+        `alerts:read`, `alerts:write`, `monitors:read`, `monitors:write`;
+        where an operation below names none, it takes `projects:read` or
+        `projects:write` according to its method.
+
+  parameters:
+    ProjectID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+      description: The project's numeric id.
+    IssueID:
+      name: issueID
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    MonitorID:
+      name: monitorID
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    ReleaseVersion:
+      name: version
+      in: path
+      required: true
+      schema: { type: string }
+      description: |
+        Whatever a deploy tool put on an event, percent-encoded — `shop@1.4.2`
+        travels as `shop%401.4.2`.
+    From:
+      name: from
+      in: query
+      schema: { type: string, format: date-time }
+      description: |
+        The start of the range, RFC 3339. Absent means the endpoint's default
+        window; the range actually used is echoed back in every response, so a
+        client never has to guess what it got.
+    To:
+      name: to
+      in: query
+      schema: { type: string, format: date-time }
+      description: The end of the range, RFC 3339.
+    Window:
+      name: range
+      in: query
+      schema: { type: string, enum: ["24h", "14d"], default: "24h" }
+      description: |
+        Two named windows rather than a duration: `24h` is the incident view,
+        `14d` is "did the fix hold". A free-form duration invites `1000d`,
+        which is a range query nobody meant.
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1 }
+      description: |
+        How many rows. Absent means the endpoint's default; every endpoint
+        bounds its own maximum, so a large value is clamped rather than
+        refused.
+
+  responses:
+    BadRequest:
+      description: |
+        Malformed, or a question that cannot be asked. A search that the index
+        cannot run answers here and says why — which is not the same as a
+        search that found nothing, and the difference is an afternoon
+        (ADR 011).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: No credential, or one that has expired or been revoked.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: |
+        A valid credential without the scope this route demands — or, for a
+        cookie, a state-changing request with no `X-Trapline-Request` header.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: |
+        No such resource. Also what a subsystem this build was assembled
+        without answers: a route that does not exist is the honest description
+        of a surface this installation does not have.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: Over the per-address limit (ADR 023).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      description: The one failure shape, for every route in this document.
+      required: [error]
+      properties:
+        error: { type: string }
+
+    Credentials:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+
+    Admin:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string }
+
+    Range:
+      type: object
+      description: The window a response actually answered over, always echoed back.
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        hours: { type: integer }
+
+    ProjectRef:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+
+    Level:
+      type: string
+      enum: [fatal, error, warning, info, debug]
+
+    IssueStatus:
+      type: string
+      enum: [unresolved, resolved, ignored]
+
+    Key:
+      type: object
+      properties:
+        public_key: { type: string }
+        dsn:
+          type: string
+          description: The whole DSN, ready to paste into an SDK.
+        created_at: { type: string, format: date-time }
+
+    Project:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug:
+          type: string
+          description: What `SENTRY_PROJECT` takes, for the emulated surface (ADR 013).
+        created_at: { type: string, format: date-time }
+        dsn: { type: string }
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/Key" }
+
+    ProjectConfig:
+      type: object
+      description: |
+        What this project accepts, how fast, and for how long — plus the
+        defaults and the vocabulary, so a client can render the choices
+        without keeping its own copy of a list that goes stale.
+      properties:
+        enabled_categories:
+          type: array
+          items: { type: string }
+        rate_limit_per_minute: { type: integer }
+        retention_days:
+          type: object
+          additionalProperties: { type: integer }
+        traces_sample_rate:
+          type: number
+          nullable: true
+          description: 'A share between 0 and 1. Null means the installation default (ADR 021).'
+        artifacts_max_mb:
+          type: integer
+          nullable: true
+        status_page:
+          type: object
+          properties:
+            enabled: { type: boolean }
+        defaults:
+          type: object
+          description: What an unset field falls back to.
+        available_categories:
+          type: array
+          items: { type: string }
+        retention_categories:
+          type: array
+          items: { type: string }
+          description: |
+            A different list from `available_categories`: retention also
+            covers the aggregates, which nothing can send (ADR 010).
+
+    ProjectConfigChange:
+      type: object
+      description: Every field optional; an absent field is left alone.
+      properties:
+        enabled_categories:
+          type: array
+          items: { type: string }
+        rate_limit_per_minute: { type: integer, minimum: 0 }
+        retention_days:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        traces_sample_rate: { type: number, minimum: 0, maximum: 1 }
+        artifacts_max_mb: { type: integer, minimum: 0 }
+        status_page:
+          type: object
+          properties:
+            enabled: { type: boolean }
+
+    Issue:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        project_id: { type: integer, format: int64 }
+        fingerprint:
+          type: string
+          description: |
+            Carries the grouping algorithm's version. A change of algorithm is
+            a new version and never a silent regrouping (ADR 003).
+        title: { type: string }
+        culprit: { type: string }
+        level: { $ref: "#/components/schemas/Level" }
+        status: { $ref: "#/components/schemas/IssueStatus" }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        times: { type: integer, format: int64 }
+        last_release: { type: string }
+
+    Event:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        event_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        level: { $ref: "#/components/schemas/Level" }
+        release: { type: string }
+        environment: { type: string }
+        message: { type: string }
+        payload:
+          type: object
+          description: |
+            The event as it arrived, scrubbed and stored whole. Never scanned
+            by a listing, a search or the dashboard — that is the invariant
+            the whole storage design rests on (ADR 001).
+
+    IssueDetail:
+      allOf:
+        - $ref: "#/components/schemas/Issue"
+        - type: object
+          properties:
+            events:
+              type: array
+              items: { $ref: "#/components/schemas/Event" }
+            tags:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    value: { type: string }
+                    count: { type: integer, format: int64 }
+            first_release: { type: string }
+            resolved_at: { type: string, format: date-time, nullable: true }
+            resolved_in_release: { type: string }
+            resolve_next_release:
+              type: boolean
+              description: Resolved "in the next release" rather than outright (ADR 012).
+            regressions: { type: integer, format: int64 }
+            regressed_in_release: { type: string }
+            seen_in_resolved_release_count:
+              type: integer
+              format: int64
+              description: |
+                Events that arrived from the release this was resolved in.
+                They are counted and not treated as a regression: a pod that
+                has not been replaced yet is not a failed fix (ADR 012).
+
+    IssuePage:
+      type: object
+      properties:
+        project: { $ref: "#/components/schemas/ProjectRef" }
+        issues:
+          type: array
+          items: { $ref: "#/components/schemas/Issue" }
+        next_cursor:
+          type: string
+          description: Opaque. Absent on the last page.
+        counts:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+          description: How many issues in each status, for the tabs.
+
+    HourPoint:
+      type: object
+      properties:
+        hour: { type: string, description: 'UTC, `YYYY-MM-DDTHH`.' }
+        count: { type: integer, format: int64 }
+        by_level:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+
+    ProjectSeries:
+      type: object
+      properties:
+        project: { $ref: "#/components/schemas/ProjectRef" }
+        range: { $ref: "#/components/schemas/Range" }
+        total: { type: integer, format: int64 }
+        series:
+          type: array
+          items: { $ref: "#/components/schemas/HourPoint" }
+        by_level:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+
+    TopIssues:
+      type: object
+      properties:
+        project: { $ref: "#/components/schemas/ProjectRef" }
+        range: { $ref: "#/components/schemas/Range" }
+        issues:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/Issue"
+              - type: object
+                properties:
+                  count:
+                    type: integer
+                    format: int64
+                    description: |
+                      Events in this range, which is a different number from
+                      `times` — and the difference is the point: `times` is the
+                      whole life of the issue.
+
+    Breakdown:
+      type: object
+      properties:
+        project: { $ref: "#/components/schemas/ProjectRef" }
+        range: { $ref: "#/components/schemas/Range" }
+        by: { type: string, enum: [release, environment] }
+        values:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              count: { type: integer, format: int64 }
+
+    IssueSeries:
+      type: object
+      properties:
+        issue_id: { type: integer, format: int64 }
+        range: { type: string, enum: ["24h", "14d"] }
+        range_bounds: { $ref: "#/components/schemas/Range" }
+        total: { type: integer, format: int64 }
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              hour: { type: string }
+              count: { type: integer, format: int64 }
+
+    Sparklines:
+      type: object
+      properties:
+        project: { $ref: "#/components/schemas/ProjectRef" }
+        range: { type: string, enum: ["24h", "14d"] }
+        range_bounds: { $ref: "#/components/schemas/Range" }
+        hours:
+          type: array
+          items: { type: string }
+          description: The buckets, once, shared by every row below.
+        issues:
+          type: array
+          items:
+            type: object
+            properties:
+              issue_id: { type: integer, format: int64 }
+              total: { type: integer, format: int64 }
+              counts:
+                type: array
+                items: { type: integer, format: int64 }
+
+    Release:
+      type: object
+      properties:
+        version: { type: string }
+        project_id: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        date_released: { type: string, format: date-time, nullable: true }
+        first_event_at: { type: string, format: date-time, nullable: true }
+        last_event_at: { type: string, format: date-time, nullable: true }
+        commit_count: { type: integer, format: int64 }
+
+    CommitFile:
+      type: object
+      properties:
+        path: { type: string }
+        type: { type: string, enum: [A, M, D] }
+
+    Commit:
+      type: object
+      properties:
+        id: { type: string, description: The SHA. }
+        message: { type: string }
+        author_name: { type: string }
+        author_email: { type: string }
+        timestamp: { type: string, format: date-time, nullable: true }
+        repository: { type: string }
+        patch_set:
+          type: array
+          items: { $ref: "#/components/schemas/CommitFile" }
+          description: |
+            The files this commit touched. Without it a release still lists
+            its commits, but nothing can be accused of having caused an issue
+            (ADR 019).
+
+    Deploy:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        environment: { type: string }
+        name: { type: string }
+        url: { type: string }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    ReleaseDetail:
+      allOf:
+        - $ref: "#/components/schemas/Release"
+        - type: object
+          properties:
+            new_issues: { type: integer, format: int64 }
+            regressed_issues: { type: integer, format: int64 }
+            events: { type: integer, format: int64 }
+            commits:
+              type: array
+              items: { $ref: "#/components/schemas/Commit" }
+            deploys:
+              type: array
+              items: { $ref: "#/components/schemas/Deploy" }
+
+    ChannelType:
+      type: string
+      enum: [telegram, slack, discord, webhook, email]
+
+    ChannelConfig:
+      type: object
+      description: |
+        The fields the channel type needs — a bot token and a chat id, a
+        webhook URL, an SMTP host. Encrypted at rest with AES-256-GCM and
+        returned with the secret fields blanked (ADR 015).
+      additionalProperties: true
+
+    Channel:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        type: { $ref: "#/components/schemas/ChannelType" }
+        name: { type: string }
+        config: { $ref: "#/components/schemas/ChannelConfig" }
+        digest:
+          type: boolean
+          description: Whether the weekly report goes here too.
+        created_at: { type: string, format: date-time }
+
+    Trigger:
+      type: object
+      description: |
+        What makes a rule fire. `type` is one of `new_issue`, `regression`,
+        `issue_spike`, `error_rate`, `uptime_down`, `uptime_recovered`,
+        `cron_missed`, `cron_timeout`, `cron_failed`, `cron_recovered`; the
+        remaining fields depend on it (ADR 015, ADR 036).
+      required: [type]
+      properties:
+        type: { type: string }
+      additionalProperties: true
+
+    AlertRule:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        project_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Null means every project.
+        name: { type: string }
+        trigger: { $ref: "#/components/schemas/Trigger" }
+        channel_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        silence_seconds: { type: integer }
+        enabled: { type: boolean }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        rule_id: { type: integer, format: int64 }
+        channel_id: { type: integer, format: int64 }
+        subject_key:
+          type: string
+          description: '`issue:<id>`, `monitor:<family>:<id>` or `project:<id>`.'
+        status: { type: string, enum: [pending, sent, failed, dead] }
+        attempts: { type: integer }
+        next_attempt_at: { type: string, format: date-time }
+        last_error: { type: string }
+        created_at: { type: string, format: date-time }
+        sent_at: { type: string, format: date-time, nullable: true }
+        payload:
+          type: object
+          description: What was, or will be, delivered.
+          additionalProperties: true
+
+    ChannelHealth:
+      type: object
+      properties:
+        configured: { type: boolean }
+        channels:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer, format: int64 }
+              type: { $ref: "#/components/schemas/ChannelType" }
+              name: { type: string }
+              digest: { type: boolean }
+              endpoint: { type: string }
+              secret_ok:
+                type: boolean
+                description: The stored credential decrypts with the key on disk.
+              reachable:
+                type: boolean
+                description: A connection opened and was closed again. Nothing was sent.
+              ok: { type: boolean }
+              detail: { type: string }
+
+    DigestSchedule:
+      type: object
+      properties:
+        weekday: { type: string }
+        hour: { type: integer, minimum: 0, maximum: 23 }
+        timezone: { type: string, description: UTC in this version. }
+
+    DigestPreview:
+      type: object
+      properties:
+        schedule: { $ref: "#/components/schemas/DigestSchedule" }
+        text: { type: string, description: The rendered report. }
+        report:
+          type: object
+          description: The same thing structured, for a client that wants to lay it out itself.
+          additionalProperties: true
+
+    StatusPageSettings:
+      type: object
+      properties:
+        title: { type: string }
+        description: { type: string }
+
+    Job:
+      type: object
+      properties:
+        name: { type: string }
+        interval_seconds: { type: integer }
+        started_at: { type: string, format: date-time }
+        last_run: { type: string, format: date-time, nullable: true }
+        next_run: { type: string, format: date-time, nullable: true }
+        last_error: { type: string, nullable: true }
+        runs: { type: integer, format: int64 }
+        failures: { type: integer, format: int64 }
+
+    CronMonitor:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        project_id: { type: integer, format: int64 }
+        slug: { type: string }
+        ping_key:
+          type: string
+          description: |
+            A credential, not an identifier. Anything holding it can report
+            this job as successful from anywhere on the internet (ADR 016).
+        ping_url: { type: string }
+        schedule_type: { type: string, enum: [crontab, interval] }
+        schedule: { type: string }
+        timezone: { type: string }
+        checkin_margin_s: { type: integer }
+        max_runtime_s: { type: integer }
+        status: { type: string, enum: [ok, missed, timeout, error, unknown] }
+        last_checkin_at: { type: string, format: date-time }
+        next_expected_at: { type: string, format: date-time }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    CronCheckIn:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        monitor_id: { type: integer, format: int64 }
+        checkin_id: { type: string }
+        status: { type: string, enum: [in_progress, ok, error] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        duration_ms: { type: integer, format: int64 }
+        environment: { type: string }
+
+    UptimeMonitor:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        project_id: { type: integer, format: int64 }
+        name: { type: string }
+        url: { type: string, format: uri }
+        method: { type: string, enum: [GET, HEAD] }
+        interval_s: { type: integer }
+        timeout_s: { type: integer }
+        expected_status_min: { type: integer }
+        expected_status_max: { type: integer }
+        expected_body_substring: { type: string }
+        follow_redirects: { type: boolean }
+        allow_private:
+          type: boolean
+          description: |
+            Only honoured when the server was also started with
+            `-uptime-allow-private`. Two switches, because turning this
+            product into a proxy into a private network should take a
+            deliberate act on both sides (ADR 016).
+        public: { type: boolean }
+        enabled: { type: boolean }
+        status: { type: string, enum: [up, down, unknown] }
+        consecutive_failures:
+          type: integer
+          description: |
+            Two consecutive failures make it `down`; one success makes it
+            `up`. A single timeout is a network, not an outage.
+        last_checked_at: { type: string, format: date-time, nullable: true }
+        next_check_at: { type: string, format: date-time }
+        last_status_change_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    UptimeCheck:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        ok: { type: boolean }
+        status_code: { type: integer }
+        latency_ms: { type: integer }
+        error: { type: string }
+
+    UptimeDay:
+      type: object
+      properties:
+        day: { type: string, description: '`YYYY-MM-DD`, UTC.' }
+        checks: { type: integer, format: int64 }
+        failures: { type: integer, format: int64 }
+        uptime: { type: number, description: 'A share between 0 and 1.' }
+        mean_latency_ms: { type: integer, format: int64 }
+
+    Sampling:
+      type: object
+      description: |
+        What a reader is actually looking at. The effective rate is observed
+        rather than assumed — the SDK's own sampling included, and any period
+        during which the knob was set differently (ADR 021).
+      properties:
+        server_rate: { type: number }
+        stored: { type: integer, format: int64 }
+        received: { type: integer, format: int64 }
+        effective_rate: { type: number }
+
+    TransactionSummary:
+      type: object
+      properties:
+        transaction: { type: string }
+        count: { type: integer, format: int64 }
+        failed: { type: integer, format: int64 }
+        fail_rate: { type: number }
+        sampled:
+          type: integer
+          format: int64
+          description: How many had their raw spans kept — i.e. whether "show me a slow one" has anything to show.
+        p50_ms: { type: number }
+        p95_ms: { type: number }
+        p99_ms: { type: number }
+        mean_ms: { type: number }
+        min_ms: { type: number }
+        max_ms: { type: number }
+
+    TransactionList:
+      type: object
+      properties:
+        project: { $ref: "#/components/schemas/ProjectRef" }
+        range: { $ref: "#/components/schemas/Range" }
+        sort: { type: string, enum: [p95, count, fail] }
+        total: { type: integer, format: int64 }
+        total_failed: { type: integer, format: int64 }
+        sampling: { $ref: "#/components/schemas/Sampling" }
+        transactions:
+          type: array
+          items: { $ref: "#/components/schemas/TransactionSummary" }
+
+    TransactionPoint:
+      type: object
+      properties:
+        bucket: { type: string, description: '`YYYY-MM-DDTHH:MM` or `YYYY-MM-DDTHH`.' }
+        count: { type: integer, format: int64 }
+        failed: { type: integer, format: int64 }
+        sampled: { type: integer, format: int64 }
+        p50_ms: { type: number }
+        p95_ms: { type: number }
+        p99_ms: { type: number }
+        fail_rate: { type: number }
+
+    TransactionSeries:
+      type: object
+      properties:
+        project: { $ref: "#/components/schemas/ProjectRef" }
+        transaction: { type: string }
+        range: { $ref: "#/components/schemas/Range" }
+        resolution: { type: string, enum: [minute, hour] }
+        total: { type: integer, format: int64 }
+        summary: { $ref: "#/components/schemas/TransactionSummary" }
+        series:
+          type: array
+          items: { $ref: "#/components/schemas/TransactionPoint" }
+        examples:
+          type: array
+          items: { $ref: "#/components/schemas/Trace" }
+          description: The slowest stored waterfalls of this transaction.
+
+    Span:
+      type: object
+      properties:
+        span_id: { type: string }
+        parent_span_id: { type: string }
+        op: { type: string }
+        description: { type: string }
+        status: { type: string }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        duration_ms: { type: number }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        data:
+          type: object
+          additionalProperties: true
+
+    Trace:
+      type: object
+      properties:
+        trace_id: { type: string }
+        transaction: { type: string }
+        timestamp: { type: string, format: date-time }
+        duration_ms: { type: integer, format: int64 }
+        status: { type: string }
+        op: { type: string }
+        spans:
+          type: array
+          items: { $ref: "#/components/schemas/Span" }
+
+    Artifact:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        project_id: { type: integer, format: int64 }
+        release_id: { type: integer, format: int64, nullable: true }
+        dist: { type: string }
+        debug_id:
+          type: string
+          description: |
+            The first of the two resolution paths, and the one that works
+            without a release: a script and its map share a debug id, and the
+            bundle has one of its own that is neither (ADR 018).
+        bundle_debug_id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [source, sourcemap] }
+        sourcemap_ref: { type: string }
+        sha256: { type: string }
+        size: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+
+    ArtifactList:
+      type: object
+      properties:
+        artifacts:
+          type: array
+          items: { $ref: "#/components/schemas/Artifact" }
+        used_bytes: { type: integer, format: int64 }
+        budget_bytes: { type: integer, format: int64 }
+
+    SessionCounts:
+      type: object
+      description: |
+        The four disjoint counters a session can end in. Four numbers per
+        (release, environment, hour) — never a row per session (ADR 008).
+      properties:
+        started: { type: integer, format: int64 }
+        errored: { type: integer, format: int64 }
+        crashed: { type: integer, format: int64 }
+        abnormal: { type: integer, format: int64 }
+
+    SessionWindow:
+      type: object
+      description: |
+        The state of the in-memory window, carried in every health answer
+        rather than on a diagnostics endpoint nobody opens: a caveat is only
+        read beside the number it applies to.
+      properties:
+        in_flight:
+          type: integer
+          description: Sessions being tracked right now — the ones a restart would lose.
+        capacity: { type: integer }
+        evicted:
+          type: integer
+          format: int64
+          description: |
+            Settled early because the window was full. Non-zero means
+            precision was traded for stability, which is the documented
+            direction (ADR 008) and something an operator should see without
+            reading a log.
+        expired:
+          type: integer
+          format: int64
+          description: Settled because they went quiet past the TTL.
+        note: { type: string }
+
+    HealthPoint:
+      allOf:
+        - $ref: "#/components/schemas/SessionCounts"
+        - type: object
+          properties:
+            hour: { type: string }
+            crash_free_rate:
+              type: number
+              nullable: true
+              description: Null for an hour nothing reported in.
+
+    ReleaseHealth:
+      allOf:
+        - $ref: "#/components/schemas/SessionCounts"
+        - type: object
+          properties:
+            project: { $ref: "#/components/schemas/ProjectRef" }
+            range: { $ref: "#/components/schemas/Range" }
+            release: { type: string }
+            healthy:
+              type: integer
+              format: int64
+              description: Ended with nothing wrong. Derived, not stored — the four counters already say it.
+            crash_free_rate: { type: number, nullable: true }
+            series:
+              type: array
+              items: { $ref: "#/components/schemas/HealthPoint" }
+            window: { $ref: "#/components/schemas/SessionWindow" }
+
+    ReleaseHealthSummary:
+      allOf:
+        - $ref: "#/components/schemas/SessionCounts"
+        - type: object
+          properties:
+            release: { type: string }
+            healthy: { type: integer, format: int64 }
+            crash_free_rate: { type: number, nullable: true }
+            first_seen:
+              type: string
+              description: |
+                The hours this release actually reported in, which is what
+                tells a live release from one that stopped reporting yesterday
+                and would otherwise sit beside it looking identical.
+            last_seen: { type: string }
+
+    ProjectHealth:
+      allOf:
+        - $ref: "#/components/schemas/SessionCounts"
+        - type: object
+          properties:
+            project: { $ref: "#/components/schemas/ProjectRef" }
+            range: { $ref: "#/components/schemas/Range" }
+            healthy: { type: integer, format: int64 }
+            crash_free_rate: { type: number, nullable: true }
+            releases:
+              type: array
+              items: { $ref: "#/components/schemas/ReleaseHealthSummary" }
+            window: { $ref: "#/components/schemas/SessionWindow" }
+
+    SuspectReason:
+      type: object
+      description: Why this commit is accused, in terms somebody can check.
+      properties:
+        path: { type: string, description: The file the commit touched. }
+        type: { type: string, enum: [A, M, D] }
+        frame_path: { type: string, description: The frame's file it matched. }
+        frame_depth:
+          type: integer
+          description: 'How far from the top of the stack: 0 is where it threw.'
+        segments: { type: integer, description: How many path segments matched. }
+
+    Suspect:
+      allOf:
+        - $ref: "#/components/schemas/Commit"
+        - type: object
+          properties:
+            score:
+              type: number
+              description: |
+                Orders this list and means nothing outside it. Returned anyway,
+                so a client showing three suspects can show that the first is
+                far ahead rather than barely.
+            reasons:
+              type: array
+              items: { $ref: "#/components/schemas/SuspectReason" }
+
+    SuspectsReport:
+      type: object
+      properties:
+        release: { type: string, description: The release whose commits were considered. }
+        suspects:
+          type: array
+          items: { $ref: "#/components/schemas/Suspect" }
+        commits:
+          type: array
+          items: { $ref: "#/components/schemas/Commit" }
+          description: |
+            The candidates ruled out, bounded. Present even when there is an
+            answer, so "why not that one" needs no second request.
+        commit_count:
+          type: integer
+          description: What the release actually holds, which says whether `commits` was truncated.
+        warning:
+          type: string
+          description: |
+            Explains an empty list in terms of what to do about it: no commit
+            set, no patch set, or a stacktrace nobody has uploaded maps for.
+        symbolicated:
+          type: boolean
+          description: |
+            Whether the frames considered had been resolved from a source map,
+            which tells "this code did not change" apart from "these frames
+            are still minified".

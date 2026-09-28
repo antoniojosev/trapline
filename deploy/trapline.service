@@ -1,0 +1,68 @@
+# systemd unit for trapline.
+#
+# The hardening below is not boilerplate. This process listens on a public
+# ingest endpoint that accepts hostile input by design, so the blast radius of
+# a bug in it is worth spending twenty lines to shrink.
+
+[Unit]
+Description=trapline — error tracking in a single binary
+Documentation=https://github.com/antoniojosev/trapline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=trapline
+WorkingDirectory=/var/lib/trapline
+
+# Configuration lives here so an operator edits one file, not the unit.
+# Everything is optional except TRAPLINE_ORIGIN, which cannot be inferred:
+# behind a proxy the request says loopback while the DSN must say the real
+# domain, and getting it wrong hands out DSNs that only work on this box.
+EnvironmentFile=-/etc/trapline/trapline.env
+Environment=TRAPLINE_DB=/var/lib/trapline/trapline.db
+Environment=TRAPLINE_ADDR=127.0.0.1:9000
+
+ExecStart=/usr/local/bin/trapline serve
+
+Restart=on-failure
+RestartSec=2s
+# SIGTERM triggers a graceful drain: in-flight envelopes finish rather than
+# being dropped, which matters most during the incident someone is deploying
+# a fix for.
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+
+# Filesystem
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/trapline
+
+# Privileges
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Network: outbound is needed for alert webhooks and uptime checks, so this
+# cannot be locked down further without breaking features that exist.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

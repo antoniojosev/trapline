@@ -1,0 +1,3 @@
+# Built panel assets: committed so `go build` needs only the Go toolchain, but
+# marked generated so reviews collapse them instead of drowning in them.
+internal/adapters/webui/dist/** linguist-generated=true -diff

@@ -1,0 +1,39 @@
+trapline — the week of Mon 24 Aug to Mon 31 Aug, UTC
+
+despacha
+96 events, down 60% from 240 last week
+1 new issue, 0 regressions
+
+  New this week
+        96  panic: runtime error: index out of range [3]  ·  route.Plan
+            https://errors.example.test/projects/2/issues/88
+
+  Loudest
+        96  panic: runtime error: index out of range [3]  ·  route.Plan
+            https://errors.example.test/projects/2/issues/88
+
+
+venekambio
+2480 events, up 34% from 1850 last week
+3 new issues, 1 regression
+
+  New this week
+       612  TypeError: rate is not a function  ·  app/rates.js in refresh
+            https://errors.example.test/projects/1/issues/41
+        87  ValueError: invalid literal for int()  ·  app/views.py in checkout
+            https://errors.example.test/projects/1/issues/44
+        12  context deadline exceeded  ·  bcv.Client.Fetch
+            https://errors.example.test/projects/1/issues/47
+
+  Came back
+       143  IntegrityError: duplicate key  ·  app/orders.py in create
+            https://errors.example.test/projects/1/issues/12
+
+  Loudest
+       612  TypeError: rate is not a function  ·  app/rates.js in refresh
+            https://errors.example.test/projects/1/issues/41
+       402  connection reset by peer
+            https://errors.example.test/projects/1/issues/9
+       143  IntegrityError: duplicate key  ·  app/orders.py in create
+            https://errors.example.test/projects/1/issues/12
+

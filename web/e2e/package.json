@@ -1,0 +1,10 @@
+{
+  "name": "trapline-ui-smoke",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright suite for scripts/ui-smoke.sh. Deliberately its own package: the panel's dependencies are what ships inside the binary, and a browser-automation toolchain has no business being installed to build it.",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

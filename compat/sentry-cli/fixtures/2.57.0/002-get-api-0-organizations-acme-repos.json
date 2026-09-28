@@ -1,0 +1,16 @@
+{
+  "seq": 2,
+  "method": "GET",
+  "path": "/api/0/organizations/acme/repos/",
+  "query": {
+    "cursor": [
+      ""
+    ]
+  },
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "response_status": 200
+}

@@ -1,0 +1,24 @@
+# <unlabelled event>
+
+- **issue**: 3
+- **project**: 1
+- **status**: unresolved
+- **level**: error
+- **first seen**: 2026-09-20T10:30:00Z
+- **last seen**: 2026-09-20T10:30:00Z
+- **events**: 1
+- **fingerprint**: `deadbeef` (grouping v1)
+
+## Frequency
+
+- last 24 h: 1
+- last 14 d: 1
+
+Today is well above this issue's own average for the fortnight: it is getting worse, not merely continuing.
+
+## Recent occurrences
+
+- 2026-09-20T10:30:00Z  `ffffffffffffffffffffffffffffffff`
+
+_None of the stored payloads could be decoded by this build, so there is no stacktrace above._
+

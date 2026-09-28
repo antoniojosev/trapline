@@ -1,0 +1,114 @@
+# trapline in Docker. One service, one volume, and a reverse proxy only if you
+# ask for it.
+#
+#   TRAPLINE_ORIGIN=https://errors.example.com docker compose -f deploy/docker-compose.yml up -d
+#
+# and with TLS terminated by Caddy:
+#
+#   TRAPLINE_DOMAIN=errors.example.com \
+#   TRAPLINE_ORIGIN=https://errors.example.com \
+#   docker compose -f deploy/docker-compose.yml --profile caddy up -d
+#
+# See README.md in this directory for the rest, including running behind an
+# nginx or Traefik you already have.
+
+name: trapline
+
+services:
+  trapline:
+    # `build` is here because there is no published image yet. When there is,
+    # delete these three lines and pin a tag: an image you built from a working
+    # copy is not reproducible, which is a thing to notice on a server.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: trapline:local
+    restart: unless-stopped
+
+    environment:
+      # The public address SDKs will send events to. Required, and deliberately
+      # unset by default: it cannot be inferred from inside a container, and a
+      # wrong value hands out DSNs that resolve nowhere. Failing to start beats
+      # starting with DSNs nobody can use.
+      TRAPLINE_ORIGIN: ${TRAPLINE_ORIGIN:?set TRAPLINE_ORIGIN to the address SDKs will use, e.g. https://errors.example.com}
+      # The addresses or CIDR blocks whose X-Forwarded-For is believed, as a
+      # comma-separated list. Empty means trust nothing, and behind a proxy
+      # that means every visitor is counted as the proxy: the per-IP limits are
+      # real (ADR 023) but cannot tell anyone apart. Set it to the proxy's
+      # address on the compose network.
+      TRAPLINE_TRUSTED_PROXIES: ${TRAPLINE_TRUSTED_PROXIES:-}
+      # Per-address ceilings. Unset means the shipped defaults: 48000 ingest
+      # requests a minute, 10 login attempts a minute.
+      TRAPLINE_INGEST_IP_RATE_LIMIT: ${TRAPLINE_INGEST_IP_RATE_LIMIT:-}
+      TRAPLINE_AUTH_RATE_LIMIT: ${TRAPLINE_AUTH_RATE_LIMIT:-}
+      TRAPLINE_DEBUG: ${TRAPLINE_DEBUG:-}
+
+    volumes:
+      # A named volume, not a bind mount. The image runs as uid 65532 and a
+      # named volume inherits the ownership baked into the image; a host
+      # directory arrives owned by root and the server cannot write to it.
+      # If you want a bind mount anyway, chown it 65532:65532 first.
+      - trapline-data:/data
+
+    # Loopback only. Publishing this on 0.0.0.0 puts the panel and the ingest
+    # endpoint straight on the internet with no TLS; put a proxy in front
+    # (the caddy profile below, or one you already run) and this stays the
+    # only door.
+    ports:
+      - "127.0.0.1:${TRAPLINE_PORT:-9000}:9000"
+
+    # The image already declares a healthcheck; it is repeated here only to
+    # make `depends_on: service_healthy` below mean something explicit.
+    healthcheck:
+      test: ["CMD", "/trapline", "doctor", "-db", "/data/trapline.db", "--quick"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    # The ingest endpoint is public by design and parses attacker-chosen bytes,
+    # so the container gives away what it does not need. This mirrors the
+    # systemd unit's hardening; the two deployments should not have different
+    # blast radii.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    # Optional. `--profile caddy` opts in; without it this service does not
+    # exist, which is the point of a profile rather than a commented-out block.
+    profiles: [caddy]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      trapline:
+        condition: service_healthy
+    environment:
+      # Pass-through form (a name with no value), for two reasons that only
+      # showed up by running this file rather than reading it. Compose
+      # interpolates every service, including ones no active profile selects,
+      # so a `:?` guard here would break `docker compose up` for people who
+      # never asked for Caddy. And `${TRAPLINE_DOMAIN:-}` would set the
+      # variable to the empty string, which is not the same as unset: Caddy's
+      # `{$VAR:fallback}` only falls back when the variable is absent, so an
+      # empty one produces an empty site address and an error message about
+      # global options. Unset, the Caddyfile's own fallback names the variable.
+      - TRAPLINE_DOMAIN
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and account keys. Losing this volume means re-issuing
+      # certificates, which Let's Encrypt rate-limits.
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  trapline-data:
+  caddy-data:
+  caddy-config:

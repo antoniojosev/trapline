@@ -1,0 +1,15 @@
+name: compat_dart
+description: Sends events through the official Dart SDK and checks what arrived.
+publish_to: none
+
+environment:
+  # The image is pinned to a patch release for the same reason the SDK is: a
+  # matrix that floats tells you something broke on some unknown day rather
+  # than on the commit that moved it (ADR 002).
+  sdk: ^3.13.0
+
+dependencies:
+  # Pure Dart, not Flutter. `sentry_flutter` wraps this package and shares its
+  # transport and event shape, so what the server sees is the same; running the
+  # Flutter one would add an emulator to the matrix and test nothing new here.
+  sentry: 9.7.0

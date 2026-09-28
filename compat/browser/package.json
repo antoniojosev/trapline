@@ -1,0 +1,15 @@
+{
+  "name": "compat-browser",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Drives the official browser SDK in a real Chromium and checks what arrived.",
+  "main": "runner.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@sentry/browser": "10.71.0",
+    "esbuild": "0.27.4",
+    "playwright": "1.56.0"
+  }
+}

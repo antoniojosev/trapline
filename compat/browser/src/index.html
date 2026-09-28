@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>compat-browser</title>
+  </head>
+  <body>
+    <!--
+      The minified bundle is loaded first and separately, so the errors it
+      raises arrive with mangled function names and a URL of their own. That is
+      the shape every production single-page application sends, and the fixture
+      the source-map work will later resolve.
+    -->
+    <!-- The DSN is served rather than baked in: it names a project the runner
+         created seconds ago, and a DSN in a committed file would be a fixture
+         pretending to be configuration. -->
+    <script src="/config.js"></script>
+    <script src="/bundle.min.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

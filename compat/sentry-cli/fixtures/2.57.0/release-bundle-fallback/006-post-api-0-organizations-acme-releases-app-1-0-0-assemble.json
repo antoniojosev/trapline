@@ -1,0 +1,52 @@
+{
+  "seq": 6,
+  "method": "POST",
+  "path": "/api/0/organizations/acme/releases/app@1.0.0/assemble/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "application/json",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "body_json": {
+    "checksum": "869058b7f2f2e7395e8bee2313a9d32508453664",
+    "chunks": [
+      "821750d75de7eaf948f95c121fa4a6ce9f40ffed",
+      "e9e789ea07091f8548d7a7ffb514a04d3e84a6c5"
+    ]
+  },
+  "assembled": {
+    "bytes": 1746,
+    "checksum_matches": true,
+    "format": "zip",
+    "files": [
+      "files/_/_/bundle.min.js",
+      "files/_/_/bundle.min.js.map",
+      "manifest.json"
+    ],
+    "manifest": {
+      "files": {
+        "files/_/_/bundle.min.js": {
+          "type": "minified_source",
+          "url": "~/bundle.min.js",
+          "headers": {
+            "debug-id": "fc31aec3-520c-531b-836e-0d5e872e8a18",
+            "sourcemap": "bundle.min.js.map"
+          }
+        },
+        "files/_/_/bundle.min.js.map": {
+          "type": "source_map",
+          "url": "~/bundle.min.js.map",
+          "headers": {
+            "debug-id": "fc31aec3-520c-531b-836e-0d5e872e8a18"
+          }
+        }
+      },
+      "debug_id": "9676ae7d-7fec-50bc-a1b9-085910f75007",
+      "org": "acme",
+      "project": "venekambio",
+      "release": "app@1.0.0"
+    }
+  },
+  "response_status": 200
+}

@@ -1,0 +1,66 @@
+{
+  "seq": 5,
+  "method": "PUT",
+  "path": "/api/0/organizations/acme/releases/app@1.0.0/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "application/json",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "body_json": {
+    "commits": [
+      {
+        "patch_set": [
+          {
+            "path": "README.md",
+            "type": "D"
+          }
+        ],
+        "repository": "origin",
+        "author_name": "Ana",
+        "author_email": "ana@example.test",
+        "timestamp": "2026-08-01T10:00:00Z",
+        "message": "drop the placeholder readme\n",
+        "id": "42824c1c172e96f902a0c8b221dd5c9e09f1c425"
+      },
+      {
+        "patch_set": [
+          {
+            "path": "app/total.py",
+            "type": "A"
+          },
+          {
+            "path": "app/views.py",
+            "type": "M"
+          }
+        ],
+        "repository": "origin",
+        "author_name": "Ana",
+        "author_email": "ana@example.test",
+        "timestamp": "2026-08-01T10:00:00Z",
+        "message": "fix the checkout total\n",
+        "id": "31935b845b07c4e244ccd1d56a9189d49a8ab65d"
+      },
+      {
+        "patch_set": [
+          {
+            "path": "README.md",
+            "type": "A"
+          },
+          {
+            "path": "app/views.py",
+            "type": "A"
+          }
+        ],
+        "repository": "origin",
+        "author_name": "Ana",
+        "author_email": "ana@example.test",
+        "timestamp": "2026-08-01T10:00:00Z",
+        "message": "the checkout view\n",
+        "id": "2929b0d2ce75739d1df69145dd166f43b4f56416"
+      }
+    ]
+  },
+  "response_status": 200
+}

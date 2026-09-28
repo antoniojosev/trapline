@@ -1,0 +1,41 @@
+trapline — the week of {{ day .Covers.From }} to {{ day .Covers.To }}, UTC
+{{- if not .Projects }}
+
+Nothing to report: no project recorded an event this week or last.
+{{- end }}
+{{- range .Projects }}
+
+{{ .Name }}
+{{ plural .Events "event" "events" }}, {{ trend .Events .PreviousEvents }}
+{{ plural .NewIssues "new issue" "new issues" }}, {{ plural .RegressedIssues "regression" "regressions" }}
+{{- if .New }}
+
+  New this week
+  {{- range .New }}
+    {{ printf "%6d" .Count }}  {{ .Title }}{{ where . }}
+    {{- with .URL }}
+            {{ . }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if .Regressions }}
+
+  Came back
+  {{- range .Regressions }}
+    {{ printf "%6d" .Count }}  {{ .Title }}{{ where . }}
+    {{- with .URL }}
+            {{ . }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if .Top }}
+
+  Loudest
+  {{- range .Top }}
+    {{ printf "%6d" .Count }}  {{ .Title }}{{ where . }}
+    {{- with .URL }}
+            {{ . }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{ end }}

@@ -1,0 +1,54 @@
+{
+  "seq": 3,
+  "method": "POST",
+  "path": "/api/0/organizations/acme/artifactbundle/assemble/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "application/json",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "body_json": {
+    "checksum": "e7c4c1642077dc3829d67cdd644e3bed8746ec39",
+    "chunks": [
+      "821750d75de7eaf948f95c121fa4a6ce9f40ffed",
+      "e639614bc257ea70dae2a02e463115c0b8e56c77"
+    ],
+    "projects": [
+      "venekambio"
+    ]
+  },
+  "assembled": {
+    "bytes": 1731,
+    "checksum_matches": true,
+    "format": "zip",
+    "files": [
+      "files/_/_/bundle.min.js",
+      "files/_/_/bundle.min.js.map",
+      "manifest.json"
+    ],
+    "manifest": {
+      "files": {
+        "files/_/_/bundle.min.js": {
+          "type": "minified_source",
+          "url": "~/bundle.min.js",
+          "headers": {
+            "debug-id": "fc31aec3-520c-531b-836e-0d5e872e8a18",
+            "sourcemap": "bundle.min.js.map"
+          }
+        },
+        "files/_/_/bundle.min.js.map": {
+          "type": "source_map",
+          "url": "~/bundle.min.js.map",
+          "headers": {
+            "debug-id": "fc31aec3-520c-531b-836e-0d5e872e8a18"
+          }
+        }
+      },
+      "debug_id": "9676ae7d-7fec-50bc-a1b9-085910f75007",
+      "org": "acme",
+      "project": "venekambio"
+    }
+  },
+  "response_status": 200
+}

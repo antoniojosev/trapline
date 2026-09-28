@@ -1,0 +1,116 @@
+# The demo: the whole product, and one service with a bug in it.
+#
+# Two containers and nothing else — no queue, no column store, no cache. That
+# is not a simplification for the demo's sake; it is the product.
+#
+# `./demo.sh` drives this file and is the thing to run. It is here as its own
+# file so that what the demo starts is readable without reading a shell script,
+# and so that `docker compose up` by hand does the obvious thing.
+#
+#   cd demo && TRAPLINE_ORIGIN=http://trapline:9000 docker compose up --build
+#
+# started by hand, the app comes up without a DSN and sends nothing: the DSN
+# does not exist until a project does, and creating that project is the first
+# thing demo.sh does.
+
+name: trapline-demo
+
+services:
+  trapline:
+    # Built from this repository, not pulled: there is no published image yet,
+    # and a demo that pulled one would be demonstrating a different build than
+    # the one in the working copy.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ${TRAPLINE_IMAGE:-trapline:demo}
+
+    environment:
+      # The address SDKs send events to, as reachable from where they run — the
+      # compose network, so the service alias and not localhost. The DSNs the
+      # server hands out are built from this, so getting it wrong hands the app
+      # a DSN that resolves nowhere, silently.
+      TRAPLINE_ORIGIN: ${TRAPLINE_ORIGIN:-http://trapline:9000}
+      # The app container's address is the only one whose X-Forwarded-For would
+      # ever be believed here, and it does not set one. Left empty on purpose:
+      # trusting nothing is the right default, and the demo should not teach
+      # otherwise (ADR 023).
+      TRAPLINE_TRUSTED_PROXIES: ""
+
+    volumes:
+      - trapline-data:/data
+
+    ports:
+      # Loopback only. A demo that published the panel on every interface is a
+      # demo somebody copies onto a server.
+      - "127.0.0.1:${TRAPLINE_PORT:-9960}:9000"
+
+    healthcheck:
+      test: ["CMD", "/trapline", "doctor", "-db", "/data/trapline.db", "--quick"]
+      interval: 2s
+      timeout: 5s
+      start_period: 10s
+      retries: 15
+
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  app:
+    # DEMO_APP_DIR is how demo.sh points this at a disposable copy of ./app
+    # that it can give a git history to and apply a patch to. By hand it is
+    # ./app, which is the buggy service as committed.
+    build:
+      context: ${DEMO_APP_DIR:-./app}
+      dockerfile: Dockerfile
+    image: ${DEMO_APP_IMAGE:-trapline-demo-app:local}
+
+    depends_on:
+      trapline:
+        condition: service_healthy
+
+    environment:
+      # Empty until demo.sh has created the project. The SDK treats a missing
+      # DSN as "disabled" and the service still works, which is the correct
+      # behaviour and also why a typo here is quiet.
+      DEMO_DSN: ${DEMO_DSN:-}
+      APP_RELEASE: ${APP_RELEASE:-checkout@1.0.0}
+      APP_ENVIRONMENT: production
+      APP_PORT: "3000"
+      HOSTNAME: web-01
+
+    ports:
+      - "127.0.0.1:${APP_PORT:-9961}:3000"
+
+  app-old:
+    # The instance nobody has redeployed yet.
+    #
+    # It is a service rather than an afterthought because it is the reason
+    # "resolve in the next release" exists (ADR 012): after the fix ships, the
+    # machines still running the old build keep throwing the same error, and a
+    # plain resolve would reopen the issue on the very next one — which looks
+    # exactly like a fix that did not work. Behind a profile, so it only exists
+    # when the demo asks for it.
+    profiles: [legacy]
+    # No build: this is the image that was already built from the unpatched
+    # source, which is what makes it the old build rather than an imitation.
+    image: ${DEMO_APP_OLD_IMAGE:-trapline-demo-app:local}
+
+    depends_on:
+      trapline:
+        condition: service_healthy
+
+    environment:
+      DEMO_DSN: ${DEMO_DSN:-}
+      APP_RELEASE: ${APP_OLD_RELEASE:-checkout@1.0.0}
+      APP_ENVIRONMENT: production
+      APP_PORT: "3000"
+      HOSTNAME: web-02
+
+    ports:
+      - "127.0.0.1:${APP_OLD_PORT:-9962}:3000"
+
+volumes:
+  trapline-data:

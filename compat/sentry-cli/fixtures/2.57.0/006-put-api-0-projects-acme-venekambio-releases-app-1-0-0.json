@@ -1,0 +1,18 @@
+{
+  "seq": 6,
+  "method": "PUT",
+  "path": "/api/0/projects/acme/venekambio/releases/app@1.0.0/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "application/json",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "body_json": {
+    "projects": [
+      "venekambio"
+    ],
+    "dateReleased": "2026-08-29T18:38:13.726682585Z"
+  },
+  "response_status": 200
+}

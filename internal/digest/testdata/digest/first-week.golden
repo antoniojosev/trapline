@@ -1,0 +1,18 @@
+trapline — the week of Mon 24 Aug to Mon 31 Aug, UTC
+
+venekambio
+18 events, none last week
+2 new issues, 0 regressions
+
+  New this week
+        12  sqlite: database is locked  ·  store.Write
+            https://errors.example.test/projects/1/issues/1
+         6  EOF
+            https://errors.example.test/projects/1/issues/2
+
+  Loudest
+        12  sqlite: database is locked  ·  store.Write
+            https://errors.example.test/projects/1/issues/1
+         6  EOF
+            https://errors.example.test/projects/1/issues/2
+

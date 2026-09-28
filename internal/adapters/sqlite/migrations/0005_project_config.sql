@@ -1,0 +1,11 @@
+-- Per-project configuration, as a column rather than a global setting.
+--
+-- Two projects on one installation legitimately want different profiles: the
+-- side project needs errors only, the one with paying users wants tracing too.
+-- A global switch would force the stricter of the two on both (ADR 005).
+--
+-- Stored as JSON because this is configuration, never a filter: it is read by
+-- primary key when a project's events arrive and never appears in a WHERE
+-- clause. Giving each knob its own column would mean a migration every time
+-- one is added, for no query that benefits.
+ALTER TABLE projects ADD COLUMN config TEXT NOT NULL DEFAULT '{}';

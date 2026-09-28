@@ -1,0 +1,18 @@
+{
+  "seq": 2,
+  "method": "POST",
+  "path": "/api/0/projects/acme/venekambio/releases/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "application/json",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "body_json": {
+    "version": "app@1.0.0",
+    "projects": [
+      "venekambio"
+    ]
+  },
+  "response_status": 201
+}

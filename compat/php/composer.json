@@ -1,0 +1,22 @@
+{
+    "name": "trapline/compat-php",
+    "description": "Sends events through the official PHP SDK and checks what arrived.",
+    "type": "project",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.3",
+        "sentry/sentry": "4.16.0",
+        "symfony/http-client": "7.3.*",
+        "nyholm/psr7": "1.8.2"
+    },
+    "config": {
+        "allow-plugins": {
+            "php-http/discovery": true
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Trapline\\CompatPhp\\": "src/"
+        }
+    }
+}

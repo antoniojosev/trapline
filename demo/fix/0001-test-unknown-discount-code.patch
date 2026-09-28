@@ -1,0 +1,36 @@
+diff --git a/test/discount.test.js b/test/discount.test.js
+new file mode 100644
+index 0000000..d99589a
+--- /dev/null
++++ b/test/discount.test.js
+@@ -0,0 +1,30 @@
++'use strict';
++
++// The test the agent wrote from the issue bundle.
++//
++// The bundle said the exception was `TypeError: Cannot read properties of
++// undefined (reading 'percent')` at `src/checkout.js`, in `applyDiscount`,
++// with a breadcrumb naming the code that was presented. That is enough to
++// reproduce it without guessing, which is the point of reading the bundle
++// before opening a file.
++
++const test = require('node:test');
++const assert = require('node:assert');
++
++const { total } = require('../src/checkout');
++
++const ORDER = {
++  id: 'ord_4412',
++  items: [
++    { sku: 'cafe-500g', unitPrice: 1200, quantity: 2 },
++    { sku: 'filtros-x100', unitPrice: 350, quantity: 1 },
++  ],
++};
++
++test('a code from a campaign that ended charges full price instead of throwing', () => {
++  assert.strictEqual(total({ ...ORDER, discountCode: 'SUMMER20' }), 3190);
++});
++
++test('a code that never existed is treated the same way', () => {
++  assert.strictEqual(total({ ...ORDER, discountCode: 'not-a-code' }), 3190);
++});

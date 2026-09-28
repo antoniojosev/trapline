@@ -1,0 +1,314 @@
+name: Nightly
+
+# The gates that are too slow, or too dependent on the network, to sit in front
+# of a pull request. ci.yml stays fast so it stays respected; what lands here is
+# what would otherwise become a manual step nobody performs.
+#
+# The split is not about how important they are — the full SDK matrix is the
+# most important gate this project has — but about what happens to a slow gate:
+# it gets skipped, then disabled, then deleted, and the project ends up with
+# less coverage than if it had never been added (ADR 002). A gate that takes
+# five minutes and pulls four container images belongs here, running once a
+# night against `main`, where nobody is waiting for it.
+#
+# `workflow_dispatch` is deliberate: a change to the matrix or to the fuzz
+# corpus should be runnable on its branch before it is merged, rather than
+# discovered broken the following morning.
+on:
+  schedule:
+    # 04:17 UTC: midnight in the timezone this is maintained from, so a failure
+    # is waiting at the start of the day rather than the end of it — and off the
+    # hour, because the top of the hour is when every scheduled workflow on the
+    # platform starts and a queued run reports on GitHub's load rather than on
+    # this repository.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.6"
+
+jobs:
+  compat-full:
+    name: SDK compatibility (full matrix)
+    runs-on: ubuntu-latest
+    # Four container images and six SDKs. The whole point of this job is that
+    # it is allowed to be slow.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The three suites that need no container run here as well, on the
+      # runner's own toolchains: the full tier is the smoke tier plus the rest,
+      # not a separate matrix that could drift from it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Real SDKs against a real server, including the three that only exist
+      # inside a container: a browser driving a real Chromium, PHP and Dart.
+      # A hand-written envelope tests this project's idea of what an SDK
+      # sends, which is the very thing in question (ADR 002).
+      - name: Full matrix
+        run: ./scripts/compat.sh --tier full
+
+  sentry-cli:
+    name: sentry-cli release lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Here rather than on a pull request because it pulls two images and
+      # drives a real client through a four-command deploy pipeline. The fast
+      # half of the same claim — the recorded requests replayed through the
+      # handler — runs in `make check` with every other test, so a change that
+      # breaks the wire shape is caught in review; this job is what proves the
+      # tool still accepts what the server answers (ADR 013).
+      - run: ./scripts/sentry-cli.sh
+
+  sourcemaps:
+    name: Source-map uploads
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The bundle this uploads is built with esbuild from compat/browser, so
+      # the node toolchain has to be here even though nothing JavaScript runs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # Nightly rather than per-PR because it pulls two images and drives the
+      # real, pinned sentry-cli through inject, upload, the legacy path and a
+      # refusal. The fast half — the recorded shapes replayed through the
+      # handler — runs in `make check`, so a change to the wire is caught in
+      # review; this job is what proves the tool accepts what the server
+      # answers, that what it sent is actually stored, and that a minified
+      # crash comes back as original source with the commit that caused it
+      # (ADR 013, ADR 018, ADR 019).
+      - run: ./scripts/sourcemaps.sh
+
+  fuzz:
+    name: Fuzz the envelope parser (10 minutes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The pull-request job runs sixty seconds, which catches regressions
+      # against the corpus already found. Finding something *new* takes longer
+      # than anyone will wait for a review, and this parser reads bytes chosen
+      # by whoever has a public DSN — which is everyone, since the key ships
+      # inside browser bundles (ADR 002).
+      - run: make fuzz FUZZTIME=10m
+      # A crasher is worth more than the run that found it: without the corpus
+      # entry the input is gone the moment the runner is recycled.
+      - name: Keep whatever it found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: internal/envelope/testdata/fuzz/
+          if-no-files-found: ignore
+
+  bench:
+    name: Ingest throughput
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # It runs on every pull request too, but a shared runner's throughput
+      # varies enough that one red build proves little. A nightly series of the
+      # same measurement is what turns the number into a trend, which is the
+      # only form in which a performance figure means anything (ADR 001).
+      - run: make bench
+
+  install:
+    name: Install a real release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser reads the tree's git state to name the snapshot, and a
+          # shallow clone with no tags produces a version that is not the one
+          # a release would have.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Builds a snapshot release with goreleaser in a container, serves it,
+      # and installs it from a clean Debian. Nightly rather than per-PR because
+      # it cross-compiles four targets; per-PR because install.sh had never
+      # been executed once before this existed, which is exactly how a `curl |
+      # sh` installer ends up broken for everyone at the same moment.
+      - run: ./scripts/install-test.sh
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A scratch image has no shell, so the only way to find out whether it
+      # runs is to run it. The healthcheck is the assertion: it opens the
+      # database the server just created and reads its pragmas.
+      - name: Build
+        run: docker build --build-arg VERSION=ci-${{ github.sha }} -t trapline:ci .
+      - name: Start it and wait for the healthcheck
+        run: |
+          docker run -d --name trapline-ci \
+            -e TRAPLINE_ORIGIN=https://errors.example.com \
+            -p 127.0.0.1:9000:9000 trapline:ci
+          for _ in $(seq 1 40); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' trapline-ci)
+            [ "$status" = healthy ] && break
+            [ "$status" = unhealthy ] && break
+            sleep 0.5
+          done
+          docker inspect --format '{{json .State.Health}}' trapline-ci
+          [ "$status" = healthy ] || { docker logs trapline-ci; exit 1; }
+          curl -fsS http://127.0.0.1:9000/api/v1/health
+      - name: Stop it
+        if: always()
+        run: docker rm -fv trapline-ci || true
+
+  hardening:
+    name: Hardening pass
+    runs-on: ubuntu-latest
+    # gosec loads and type-checks the whole package graph and is by far the
+    # longest step: measured at 28 minutes and still running on the WSL2
+    # machine this was written on, where it sat at 2% CPU the whole time, so
+    # the cost is process and filesystem overhead rather than analysis. A
+    # Linux runner should be several times quicker; the timeout is set for the
+    # bad case, because a job that is killed at the last step reports nothing
+    # about the twenty checks that had already passed. The live checks boot
+    # four servers and throw two decompression floods at one of them.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install gosec
+        run: make tools
+      # Nightly rather than per-PR for the ordinary reason — it is slow — but
+      # also because what it asserts only means anything with a whole machine
+      # underneath it. The bomb section measures resident memory under a flood
+      # at two concurrencies and asserts the peak does not follow the flood;
+      # run beside four other jobs on a shared runner, that would be measuring
+      # the neighbours (ADR 039).
+      - run: ./scripts/hardening.sh --only live
+
+  fuzz-hostile-input:
+    name: Fuzz every parser that reads someone else's bytes
+    runs-on: ubuntu-latest
+    # Four targets at ten minutes each, plus the corpus replay each one does
+    # before it starts.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # A separate job from `fuzz` above, which runs the envelope parser alone
+      # and predates the others. This one is the whole family: the envelope
+      # framing, the event payload inside it, a source map somebody uploaded
+      # and a latency sketch read back off disk. Separate from `hardening` so
+      # that "a parser found a crasher" and "a header went missing" are two
+      # different red squares rather than one (ADR 002, ADR 018).
+      - run: ./scripts/hardening.sh --only fuzz
+      # A crasher is worth more than the run that found it: without the corpus
+      # entry the input is gone the moment the runner is recycled.
+      - name: Keep whatever it found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-hostile-input
+          path: |
+            internal/envelope/testdata/fuzz/
+            internal/sentry/testdata/fuzz/
+            internal/sourcemap/testdata/fuzz/
+            internal/engine/sketch/testdata/fuzz/
+          if-no-files-found: ignore
+
+  footprint:
+    name: Footprint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The two figures the README quotes, measured rather than remembered.
+      # Here rather than on a pull request because it ingests a hundred
+      # thousand events and because a resident-memory figure taken on a runner
+      # shared with four other jobs is a figure about the other four
+      # (docs/benchmarks/footprint.md).
+      #
+      # One run, in --json, not two: the budgets are enforced either way and a
+      # second pass would double a twenty-minute job to keep a copy of numbers
+      # the first pass already printed.
+      - run: ./scripts/footprint.sh --json | tee footprint.json
+      # Kept so the series is readable over time. A footprint means something
+      # as a trend and very little as one sample — the same reason `bench` runs
+      # here as well as on every pull request.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: footprint
+          path: footprint.json
+          if-no-files-found: ignore
+
+  demo:
+    name: The demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Node is here because step 7 runs the demo service's own test suite the
+      # way its own README says to, which is what an agent would do. The suite
+      # needs no dependency — it is `node --test` over two files — so this is
+      # the runtime and nothing else.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # The whole product in one run: a real service with a real bug sends a
+      # real error through the official SDK, the server attributes it to the
+      # commit that introduced it, the patch lands, the issue is resolved in
+      # the next release, the service is redeployed and the error does not come
+      # back — while the instance nobody redeployed keeps throwing it and does
+      # not reopen anything.
+      #
+      # Here rather than on a pull request for both of the reasons the split
+      # names: it builds two container images and installs the Sentry SDK from
+      # the registry, so it depends on the network, and it takes minutes. The
+      # subsystems it crosses are each gated on the PR already — this is the
+      # one that checks they still add up to the thing on the landing page.
+      #
+      # --no-agent is not a reduced run. It is the same run with the one step a
+      # machine cannot assert replaced by the patches in demo/fix/, so what
+      # is being checked is everything an agent needs and everything that
+      # happens after it.
+      - run: ./demo/demo.sh --no-agent
+      - name: What the containers said, if it failed
+        if: failure()
+        run: docker ps -a && docker logs "$(docker ps -aqf name=trapline-demo-trapline)" 2>&1 | tail -100

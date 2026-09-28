@@ -1,0 +1,23 @@
+# OperationalError: could not connect to server
+
+- **issue**: 9
+- **project**: 2
+- **status**: ignored
+- **level**: error
+- **culprit**: `connect in db/pool.py`
+- **first seen**: 2026-06-12T11:30:00Z
+- **last seen**: 2026-08-30T15:30:00Z
+- **events**: 9412
+- **fingerprint**: `0f0f0f0f` (grouping v1)
+
+## Frequency
+
+- last 24 h: 0
+- last 14 d: 812
+
+Nothing in the last 24 hours, so whatever was happening has stopped.
+
+## Recent occurrences
+
+None stored. The counts above come from the hourly aggregates, which outlive the payloads (ADR 010), so this issue may well have happened — its events have simply passed their retention window.
+

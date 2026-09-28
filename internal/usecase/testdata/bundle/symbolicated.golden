@@ -1,0 +1,98 @@
+# TypeError: Cannot read properties of undefined (reading 'total')
+
+- **issue**: 42
+- **project**: 1
+- **status**: unresolved
+- **level**: error
+- **culprit**: `totalFor in src/checkout.ts`
+- **first seen**: 2026-09-19T05:30:00Z
+- **last seen**: 2026-09-20T11:26:00Z
+- **events**: 318
+- **fingerprint**: `b1d9c1f0` (grouping v1)
+
+## Frequency
+
+- last 24 h: 274
+- last 14 d: 318
+
+Today is well above this issue's own average for the fortnight: it is getting worse, not merely continuing.
+
+## Releases
+
+- **first seen in**: `shop@1.4.2`
+- **last seen in**: `shop@1.4.2`
+
+## Exception
+
+```
+TypeError: Cannot read properties of undefined (reading 'total')
+```
+
+## Stacktrace
+
+Failing call first.
+
+-> #1 `app:///src/checkout.ts`:42:17 in `totalFor`
+      _symbolicated from_ `https://shop.example/assets/index-9f2b.js`:1:4712
+
+```
+    40 | export function totalFor(cart: Cart) {
+    41 |   const lines = cart.lines;
+>   42 |   return lines.reduce((sum, line) => sum + line.total, 0);
+    43 | }
+```
+
+   #2 `node_modules/react-dom/client.js`:240 in `render`
+
+-> #3 `app:///src/main.tsx`:11 in `boot`
+      _symbolicated from_ `https://shop.example/assets/index-9f2b.js`:1:88
+
+## Context
+
+### User
+
+- `email`: buyer@example.com
+- `id`: 4711
+
+### Request
+
+- `method`: GET
+- `url`: https://shop.example/checkout
+
+### Contexts
+
+- `browser`: {name=Chrome, version=141.0}
+- `os`: {name=macOS, version=15.2}
+
+### Extra
+
+- `cart_lines`: 3
+- `coupon`: null
+- `experiment`: true
+
+## Breadcrumbs
+
+- `2026-09-20T11:25:00Z` [navigation] (info) /cart -> /checkout
+- `2026-09-20T11:25:30Z` [xhr] (info) GET /api/cart — {duration_ms=31, status_code=200}
+- `2026-09-20T11:25:58Z` [ui.click] (info) button#pay
+
+## Tags
+
+- **browser**: `Chrome 141.0` (290)
+- **environment**: `production` (301), `staging` (17)
+- **release**: `shop@1.4.2` (300), `shop@1.4.1` (18)
+
+## Recent occurrences
+
+- 2026-09-20T11:26:00Z  `6f3c2a1d4b5e4f8a9c0d1e2f3a4b5c6d`  release `shop@1.4.2`  env `production`  ← the occurrence above
+- 2026-09-20T11:21:00Z  `6f3c2a1d4b5e4f8a9c0d1e2f3a4b5c6d`  release `shop@1.4.2`  env `production`
+- 2026-09-20T10:20:00Z  `6f3c2a1d4b5e4f8a9c0d1e2f3a4b5c6d`  release `shop@1.4.1`  env `staging`
+
+## Suspect commits
+
+Considering the 7 commits of `shop@1.4.2`, the release this issue was first seen in (ADR 019).
+
+1. `9c1e4b7a` — checkout: apply coupons before totalling
+   by Antonio Vila
+   touched `src/checkout.ts` (M), which is frame #1
+

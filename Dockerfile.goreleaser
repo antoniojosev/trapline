@@ -1,0 +1,51 @@
+# The release image, built by goreleaser (see .goreleaser.yaml, `dockers:`).
+#
+# ./Dockerfile compiles the binary itself, which is what `docker build .` from
+# a checkout should do. goreleaser already has the binary — the same one that
+# goes into the archive of the same release — so this file only copies it, and
+# a release ships one build of the code rather than two that could differ.
+# Everything after the COPY is the same as ./Dockerfile, and for the same
+# reasons; the comments there are the ones to read.
+#
+# The first stage runs on the build platform whatever the target is, because
+# it only lays out files: certificates, a passwd entry and two directories.
+# Nothing in it depends on the architecture, and pinning it to $BUILDPLATFORM
+# means the arm64 image needs no emulation to build.
+
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS base
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null \
+ && mkdir -p /out/data /out/tmp \
+ && chown 65532:65532 /out/data /out/tmp \
+ && chmod 1777 /out/tmp \
+ && printf 'trapline:x:65532:65532:trapline:/:/sbin/nologin\n' > /out/passwd \
+ && printf 'trapline:x:65532:\n' > /out/group
+
+
+FROM scratch
+
+COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=base /out/passwd /etc/passwd
+COPY --from=base /out/group /etc/group
+COPY --from=base --chown=65532:65532 /out/data /data
+COPY --from=base --chown=65532:65532 /out/tmp /tmp
+# goreleaser lays the build context out as <os>/<arch>/<binary>, one per
+# platform in `dockers_v2.platforms`, and buildx sets TARGETPLATFORM to the
+# one this layer is for — so a single build picks the right binary for each.
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/trapline /trapline
+
+USER 65532:65532
+
+VOLUME /data
+EXPOSE 9000
+
+ENV TRAPLINE_DB=/data/trapline.db \
+    TRAPLINE_ADDR=0.0.0.0:9000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --start-interval=1s --retries=3 \
+  CMD ["/trapline", "doctor", "-db", "/data/trapline.db", "--quick"]
+
+ENTRYPOINT ["/trapline"]
+CMD ["serve"]

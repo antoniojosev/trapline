@@ -1,0 +1,215 @@
+# Estricto y versionado a propósito: los gates son el juez continuo de la
+# calidad, no una sugerencia. Si un linter molesta, se discute y se cambia
+# aquí — no se silencia en el código.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - depguard
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+    - wrapcheck
+
+  settings:
+    depguard:
+      rules:
+        # ADR 004: el dominio es puro. Solo stdlib y él mismo.
+        domain-is-pure:
+          files:
+            - "**/internal/domain/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/domain
+        # ADR 004: el motor no conoce el resto del repo. Esta regla es lo
+        # que mantiene barata su extracción futura como librería.
+        engine-is-standalone:
+          files:
+            - "**/internal/engine/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/engine
+        # ADR 002: el parser de envelopes es puro y fuzzeable.
+        envelope-is-pure:
+          files:
+            - "**/internal/envelope/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/envelope
+        # ADR 035: el digest se renderiza desde números ya reunidos. Si
+        # pudiera leer un store o un reloj, su salida dejaría de ser función
+        # pura de su entrada y los fixtures dorados dejarían de significar algo.
+        digest-is-pure:
+          files:
+            - "**/internal/digest/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/digest
+        # ADR 023: decidir de quién es una petición es una frontera de
+        # seguridad y se mantiene como función pura de dos strings.
+        clientip-is-pure:
+          files:
+            - "**/internal/clientip/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/clientip
+        # ADR 016: decidir si este servidor puede conectarse a una dirección
+        # que eligió un usuario es una frontera de seguridad. Solo stdlib, para
+        # que la política sea una tabla legible y el dialer que la aplica no
+        # pueda recibir un hostname de algo que ya comprobó otro distinto.
+        ssrfguard-is-pure:
+          files:
+            - "**/internal/ssrfguard/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/ssrfguard
+        # ADR 018: el parser de source maps lee ficheros que sube un usuario y
+        # se fuzzea aislado, igual que el de envelopes. Solo stdlib.
+        sourcemap-is-pure:
+          files:
+            - "**/internal/sourcemap/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/sourcemap
+
+        # ADR 018: el lector de artifact bundles parsea un archivo comprimido
+        # que sube quien tenga un token. Solo stdlib, para que se pueda fuzzear
+        # aislado igual que el parser de envelopes.
+        artifactbundle-is-pure:
+          files:
+            - "**/internal/artifactbundle/**"
+          allow:
+            - $gostd
+            - github.com/antoniojosev/trapline/internal/artifactbundle
+
+        # El dominio y los casos de uso no hablan SQL ni HTTP.
+        no-infra-in-core:
+          files:
+            - "**/internal/domain/**"
+            - "**/internal/usecase/**"
+          deny:
+            - pkg: database/sql
+              desc: "el storage vive en un adapter (ADR 004)"
+            - pkg: modernc.org/sqlite
+              desc: "el storage vive en un adapter (ADR 004)"
+            - pkg: net/http
+              desc: "el transporte vive en un adapter (ADR 006)"
+
+    errcheck:
+      check-type-assertions: true
+
+    revive:
+      rules:
+        - name: exported            # godoc en todo lo exportado (§3.6)
+        - name: context-as-argument
+        - name: error-strings
+        - name: errorf
+        - name: indent-error-flow
+        - name: unexported-return
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      settings:
+        hugeParam:
+          # El umbral por defecto (80 bytes) marca tipos de dominio normales.
+          # Los valores de dominio se pasan POR VALOR a propósito: es lo que
+          # elimina el aliasing y hace que un método no pueda mutar lo que le
+          # pasaron. Copiar ~96 bytes en una operación que además escribe en
+          # SQLite es ruido, no un coste. Se sube a 192 para que el aviso siga
+          # cazando structs realmente grandes — y siga aplicando en los bucles
+          # calientes de verdad, como la validación por evento en la ingesta.
+          sizeThreshold: 192
+
+    wrapcheck:
+      # Errors from this module's own packages are not "external": the
+      # adapters add context at the point where an error enters the system
+      # (that is where wrapcheck still applies), and domain sentinels then
+      # travel unchanged so errors.Is keeps working and messages do not
+      # accumulate "listing projects: listing projects:" noise.
+      ignore-package-globs:
+        - github.com/antoniojosev/trapline/*
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Join(
+        - errors.Unwrap(
+        - .Wrap(
+        - .WithMessage(
+
+  exclusions:
+    rules:
+      # Los tests pueden ser más laxos: no exportan API ni corren en prod.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+          - wrapcheck
+      # rangeValCopy sugiere indexar en vez de copiar, lo cual no es aplicable
+      # al recorrer un mapa: en Go no se puede indexar uno. Y en un fake de
+      # test la copia no está en ninguna ruta caliente. En código de producción
+      # la regla sigue activa, que es donde importa.
+      - path: _test\.go
+        linters:
+          - gocritic
+        text: "rangeValCopy"
+      # hugeParam sobre domain.Issue, y sólo sobre él.
+      #
+      # El umbral global sigue en 192 y sigue cazando todo lo demás. Lo que se
+      # exceptúa aquí es un tipo concreto por una razón concreta: domain.Issue
+      # pasó de 176 a 256 bytes al ganar el ciclo de vida de releases (ADR
+      # 012), y pasarlo por puntero para callar al linter reintroduciría
+      # exactamente el aliasing que el paso por valor elimina — Observe,
+      # Regress y Resolve devuelven un Issue nuevo precisamente para que no
+      # puedan mutar el que les pasaron, y media suite de tests comprueba que
+      # el receptor no cambia. Copiar 256 bytes en una operación que además
+      # escribe en SQLite no es un coste medible; el bench de ingesta es el
+      # juez de eso y sigue en verde muy por encima del mínimo.
+      - linters:
+          - gocritic
+        text: "hugeParam: (i|issue) is heavy"
+        path: (internal/domain/issue\.go|internal/adapters/sqlite/issue_(repository|resolution)\.go)
+      # bodyclose no ve a través del helper de tests: `client.do` cierra cada
+      # body con t.Cleanup, así que las respuestas SÍ se cierran.
+      - path: _test\.go
+        linters:
+          - bodyclose
+      # El paquete cli existe para escribir en stdout y stderr. Una escritura
+      # fallida ahí significa que la tubería del consumidor ya no está, y no
+      # queda un segundo canal por el que informarlo: el exit code es la única
+      # señal que sigue llegando a alguien. Comprobar cada Fprintf añadiría
+      # ruido en cada línea de salida sin habilitar ninguna reacción.
+      - path: internal/adapters/cli/
+        linters:
+          - errcheck
+        text: "fmt.Fprint"
+      # G124 exige Secure siempre en cookies. Aquí es condicional al esquema
+      # del origen configurado, y es deliberado: forzarlo con un origen http://
+      # haría que el navegador descarte la cookie y el login fallara en
+      # silencio — peor resultado que un operador eligiendo HTTP a sabiendas
+      # en una LAN. HttpOnly y SameSite sí son incondicionales.
+      - path: internal/adapters/httpapi/auth_handler\.go
+        linters:
+          - gosec
+        text: "G124"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/antoniojosev/trapline

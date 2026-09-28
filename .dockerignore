@@ -1,0 +1,26 @@
+# The build stage needs the Go tree and the embedded panel, and nothing else.
+# Everything excluded here is either large, machine-local, or would change the
+# image digest without changing the image.
+
+.git
+.github
+dist/
+data/
+trapline
+trapline.exe
+coverage.out
+*.db
+*.db-wal
+*.db-shm
+
+# Node inputs. internal/adapters/webui/dist is committed and is what gets
+# embedded, so the image never needs npm.
+node_modules/
+web/node_modules/
+web/tsconfig.tsbuildinfo
+compat/node/node_modules/
+compat/python/.venv/
+
+# Nothing in the image reads these.
+docs/
+artifacts/

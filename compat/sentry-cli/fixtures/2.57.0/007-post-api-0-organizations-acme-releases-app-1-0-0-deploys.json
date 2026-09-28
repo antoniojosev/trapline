@@ -1,0 +1,19 @@
+{
+  "seq": 7,
+  "method": "POST",
+  "path": "/api/0/organizations/acme/releases/app@1.0.0/deploys/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "application/json",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "body_json": {
+    "environment": "production",
+    "name": "pipeline-42",
+    "url": "https://ci.example.test/42",
+    "dateStarted": null,
+    "dateFinished": "2026-08-29T18:38:14.364825020Z"
+  },
+  "response_status": 201
+}

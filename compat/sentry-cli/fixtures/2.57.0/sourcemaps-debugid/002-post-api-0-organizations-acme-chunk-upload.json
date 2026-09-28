@@ -1,0 +1,36 @@
+{
+  "seq": 2,
+  "method": "POST",
+  "path": "/api/0/organizations/acme/chunk-upload/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "multipart/form-data; boundary=\u003crandom\u003e",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "multipart": [
+    {
+      "name": "file_gzip",
+      "filename": "821750d75de7eaf948f95c121fa4a6ce9f40ffed",
+      "content_type": "application/octet-stream",
+      "bytes": 1047,
+      "sha1": "fddc422732a4103c0f8476077d4b92b93f903c3f",
+      "gzip": true,
+      "inflated_bytes": 1024,
+      "inflated_sha1": "821750d75de7eaf948f95c121fa4a6ce9f40ffed",
+      "filename_is_sha1_of": "inflated bytes"
+    },
+    {
+      "name": "file_gzip",
+      "filename": "e639614bc257ea70dae2a02e463115c0b8e56c77",
+      "content_type": "application/octet-stream",
+      "bytes": 661,
+      "sha1": "28ac3752d939f0355a1d0dbb11c8e13c14d5c335",
+      "gzip": true,
+      "inflated_bytes": 707,
+      "inflated_sha1": "e639614bc257ea70dae2a02e463115c0b8e56c77",
+      "filename_is_sha1_of": "inflated bytes"
+    }
+  ],
+  "response_status": 200
+}

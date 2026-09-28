@@ -1,0 +1,5 @@
+# The suite is built into a temporary directory by scripts/compat.sh, so a
+# binary here is somebody's `go build .` and not something the repository
+# needs. Ten megabytes of ELF got committed once already.
+/go
+/compat-go

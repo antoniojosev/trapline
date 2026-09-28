@@ -1,0 +1,17 @@
+{
+  "name": "demo-checkout",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The buggy checkout service the demo fixes.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@sentry/node": "10.71.0"
+  }
+}

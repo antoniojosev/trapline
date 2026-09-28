@@ -1,0 +1,11 @@
+{
+  "seq": 4,
+  "method": "GET",
+  "path": "/api/0/organizations/acme/releases/app@1.0.0/previous-with-commits/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "response_status": 404
+}

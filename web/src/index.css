@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+/* One accent, one neutral ramp, and the system font stack. A panel someone
+   opens when something is broken should be legible and quiet, not designed. */
+@theme {
+  --color-ink: oklch(0.22 0.01 260);
+  --color-muted: oklch(0.55 0.01 260);
+  --color-line: oklch(0.92 0.005 260);
+  --color-surface: oklch(0.99 0.002 260);
+  --color-accent: oklch(0.55 0.16 255);
+}
+
+/* The chart palette, as plain custom properties rather than a second @theme
+   block — see the dark override below for why that distinction is load-bearing.
+   They are not in @theme at all because nothing needs a utility class from
+   them: they are read by var() inside SVG fills and strokes, and a colour that
+   only ever appears in an attribute has no business generating a class.
+
+   Severity keeps the same hues the level badges use, so a red column and a red
+   badge mean the same thing on the same screen. The chart never relies on that
+   alone: every series is named in words beside its swatch (charts.tsx). */
+:root {
+  --chart-fatal: oklch(0.45 0.19 25);
+  --chart-error: oklch(0.58 0.2 25);
+  --chart-warning: oklch(0.75 0.15 75);
+  --chart-info: oklch(0.68 0.06 240);
+  --chart-debug: oklch(0.78 0.02 260);
+  --chart-bar: oklch(0.55 0.16 255);
+  --chart-track: oklch(0.92 0.005 260);
+  --chart-line: oklch(0.55 0.16 255);
+}
+
+/* Plain custom properties, not a second @theme block: Tailwind hoists every
+   @theme it finds into one unconditional :root rule, so nesting one in a media
+   query silently shipped the dark ramp to everybody and dropped the light one
+   entirely. Overriding the same variables here keeps the intent and actually
+   respects what the reader asked their system for. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-ink: oklch(0.93 0.005 260);
+    --color-muted: oklch(0.65 0.01 260);
+    --color-line: oklch(0.3 0.008 260);
+    --color-surface: oklch(0.17 0.008 260);
+    --color-accent: oklch(0.72 0.14 255);
+
+    /* Lightened rather than re-hued: on a dark ground the light ramp's darker
+       reds sit almost on the background, and a bar nobody can see is a bar
+       that reads as an hour with nothing in it. */
+    --chart-fatal: oklch(0.62 0.2 25);
+    --chart-error: oklch(0.7 0.18 25);
+    --chart-warning: oklch(0.82 0.14 75);
+    --chart-info: oklch(0.72 0.07 240);
+    --chart-debug: oklch(0.55 0.02 260);
+    --chart-bar: oklch(0.72 0.14 255);
+    --chart-track: oklch(0.3 0.008 260);
+    --chart-line: oklch(0.72 0.14 255);
+  }
+}
+
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}

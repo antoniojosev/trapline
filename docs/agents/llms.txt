@@ -1,0 +1,70 @@
+# trapline
+
+> Error tracking, tracing, uptime, cron monitoring y status page en **un solo
+> binario Go**, compatible con los SDKs oficiales de Sentry: se cambia el DSN y
+> funciona. AGPL-3.0, self-hosted, sin dependencias de servicio. El diferencial
+> es que **un agente lo opera**: MCP embebido y un documento markdown por issue
+> con todo lo que hace falta para arreglarlo.
+
+Este fichero es el índice para un modelo de lenguaje. Está ordenado por lo que
+suele hacer falta, no por la estructura del repositorio. Si sólo vas a leer una
+cosa y tu tarea es arreglar un error, lee `skills/fix-error/SKILL.md`.
+
+## Operar el producto
+
+- [Operar desde un agente](operating.md): CLI y MCP, códigos de salida, el flujo
+  de un error a un arreglo, y lo que un agente no debe hacer.
+- [Skill /fix-error](../../skills/fix-error/SKILL.md): el procedimiento
+  completo, paso a paso, para arreglar un error de producción sin desplegarlo.
+- [Contrato de la API](../api/openapi.yaml): `/api/v1/`, congelada. Verificada
+  contra la tabla de rutas del binario en las dos direcciones; si no está aquí,
+  no existe.
+- [Instalar](../install.md): de cero a un primer error visible.
+- [Migrar desde Sentry](../migrate-from-sentry.md): la matriz de SDKs probados,
+  y la lista de lo que no existe y no va a existir.
+- [Desplegar](../../deploy/README.md): systemd, Docker, proxies, backup.
+- [Webhooks salientes](../alerts/webhooks.md): firma HMAC y cómo verificarla.
+
+## Las tres cosas que hay que saber antes de tocar nada
+
+- **Ninguna consulta escanea payloads.** Listados, búsqueda y dashboard pegan
+  sólo contra columnas indexadas y tablas agregadas
+  ([ADR 001](../adr/0001-sqlite-como-unico-estado.md),
+  [ADR 010](../adr/0010-agregados-horarios-en-la-transaccion-de-ingesta.md)).
+- **Un subsistema apagado no cuesta.** No arranca su goroutine y sus rutas no se
+  registran ([ADR 005](../adr/0005-toggles-con-backpressure.md),
+  [ADR 014](../adr/0014-scheduler-con-arranque-condicional.md)).
+- **Nunca se persiste un percentil ni una fila por session.** Se guarda un
+  sketch fusionable y contadores
+  ([ADR 007](../adr/0007-percentiles-por-sketch.md),
+  [ADR 008](../adr/0008-ventana-de-sessions-en-memoria.md)).
+
+## Entender el diseño
+
+- [Arquitectura](../../ARCHITECTURE.md): el mapa, en cinco minutos, con las
+  siete fronteras que no se cruzan y por dónde entrar a cada subsistema.
+- [Decisiones, en orden de lectura](../architecture/README.md): los ADRs
+  agrupados por pregunta, con qué responde cada uno.
+- [Todas las decisiones](../adr/README.md): la tabla cruda, una por fichero,
+  inmutables.
+
+## Cifras, y de dónde salen
+
+- [Huella medida](../benchmarks/footprint.md): 19,7 MB en reposo en el perfil
+  mínimo, 34,2 MB con todo encendido, 38,7 MB de pico ingiriendo; binario de
+  18,13 MB. Metodología reproducible y gate nocturno que falla si caducan.
+- [Matriz de compatibilidad](../../compat/README.md): los SDKs probados y sus
+  versiones pinneadas.
+- [Seguridad](../../SECURITY.md): superficie de ataque, qué se cifra y cómo se
+  reporta una vulnerabilidad.
+
+## Contribuir
+
+- [CONTRIBUTING.md](../../CONTRIBUTING.md): el compromiso de licencia primero,
+  y después cómo se trabaja aquí (`git commit -s`, conventional commits).
+- [Gates](../../Makefile): `make check` es lo mismo que corre CI en una PR.
+  Ningún gate se relaja; un gate que falla por un cambio legítimo es una
+  conversación de diseño, no un número que subir.
+
+## Optional
+

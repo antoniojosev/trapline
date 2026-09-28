@@ -1,0 +1,27 @@
+{
+  "seq": 2,
+  "method": "POST",
+  "path": "/api/0/projects/acme/venekambio/releases/app@1.0.0/files/",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer \u003credacted\u003e",
+    "content-type": "multipart/form-data; boundary=\u003crandom\u003e",
+    "user-agent": "sentry-cli/2.57.0"
+  },
+  "multipart": [
+    {
+      "name": "file",
+      "filename": "bundle.min.js",
+      "content_type": "application/octet-stream",
+      "bytes": 971,
+      "sha1": "f3c4ec7ae48c553eb352c9b2487c63a2ddcf72e5"
+    },
+    {
+      "name": "name",
+      "bytes": 15,
+      "sha1": "7a755b8b3580232b94ffcf38298b235451c7c74c",
+      "value": "~/bundle.min.js"
+    }
+  ],
+  "response_status": 201
+}

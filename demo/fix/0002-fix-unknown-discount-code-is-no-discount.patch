@@ -1,0 +1,18 @@
+diff --git a/src/checkout.js b/src/checkout.js
+index 05f100e..c5ed836 100644
+--- a/src/checkout.js
++++ b/src/checkout.js
+@@ -18,6 +18,13 @@ const DISCOUNTS = {
+ // applyDiscount takes the percentage off, in cents.
+ function applyDiscount(amount, code) {
+   const rule = DISCOUNTS[code];
++  // A campaign that ends leaves its code in circulation — in the email that
++  // announced it, in a screenshot, on a coupon site — so an unknown code is
++  // not an exceptional condition, it is what every promotion turns into. The
++  // order goes through at full price rather than failing.
++  if (!rule) {
++    return amount;
++  }
+   return amount - (amount * rule.percent) / 100;
+ }
+ 
